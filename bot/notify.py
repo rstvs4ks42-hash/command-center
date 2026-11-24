@@ -149,7 +149,7 @@ def send_ntfy(text: str) -> None:
             "Priority": "default",
             "Tags": "rocket",
             "Click": NTFY_CLICK,
-            "Actions": f"view, Открыть Command Center, {NTFY_CLICK}",
+            "Actions": f"view, Open App, {NTFY_CLICK}",
             "Content-Type": "text/plain; charset=utf-8",
         },
     )
