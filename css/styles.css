@@ -916,12 +916,23 @@ a {
 .sub-card.urgent .countdown { color: var(--danger); }
 
 /* Prompts */
+.preset-pack {
+  border-color: rgba(91, 140, 255, 0.28);
+  background:
+    linear-gradient(145deg, rgba(91, 140, 255, 0.08), transparent 42%),
+    var(--bg-elevated);
+}
+
 .prompt-card {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px;
   margin-bottom: 10px;
+}
+
+.prompt-card.is-preset {
+  border-color: rgba(91, 140, 255, 0.22);
 }
 
 .prompt-card h4 {

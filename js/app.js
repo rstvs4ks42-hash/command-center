@@ -1241,31 +1241,158 @@
   }
 
   /* ===================== PROMPTS ===================== */
-  function renderPrompts() {
-    const s = getState();
-    const q = (promptQuery || ($("#prm-search")?.value || "")).trim().toLowerCase();
-    const list = (s.prompts || []).filter((p) => {
-      if (!q) return true;
-      const tags = (p.tags || []).join(" ");
-      return `${p.title} ${p.category || ""} ${tags} ${p.text}`.toLowerCase().includes(q);
+  const YT_US_FACTORY_PRESETS = [
+    {
+      id: "yt-us-factory-01",
+      title: "01. Оценка ниши (US Tier-1 RPM)",
+      category: "youtube-завод",
+      tags: ["youtube-завод", "ниша", "us"],
+      text: "Я хочу запустить американский YouTube-канал без лица в стиле минималистичной белой доски и 2D-персонажа в нише: [НИША]. Оцени нишу для рынка США по 5 факторам от 1 до 10: 1) Потолок дохода (RPM в США, спонсоры, партнёрки); 2) Объём поискового спроса (хватит ли тем на 2–3 видео в неделю); 3) Конкуренция; 4) Долговечность (вечнозелёный или тренды); 5) Сложность анимации. В конце дай итог из 50, вердикт в одну строку, главный риск и один незанятый угол для старта.",
+    },
+    {
+      id: "yt-us-factory-02",
+      title: "02. ДНК конкурента (Разбор формулы)",
+      category: "youtube-завод",
+      tags: ["youtube-завод", "конкурент", "us"],
+      text: "Проанализируй американский YouTube-канал: [НАЗВАНИЕ/ССЫЛКА]. Вытащи формулу: 1) Средняя длина видео, темп смены кадров и структура от начала до конца; 2) Формула названий (разбери 10 топ-видео и повторяющиеся триггеры); 3) Стратегия обложек (цвета, главный объект, текст, эмоция); 4) Главный пробел — тема, которую зрители просят в комментариях, но автор не даёт.",
+    },
+    {
+      id: "yt-us-factory-03",
+      title: "03. Генератор названий (High CTR US)",
+      category: "youtube-завод",
+      tags: ["youtube-завод", "названия", "ctr"],
+      text: "Напиши 10 кликабельных названий на естественном американском английском (строго без штампов ИИ) + перевод на русский для видео на тему: [КОНЦЕПЦИЯ ВИДЕО]. Микс: 2 с разрывом любопытства, 3 списка с цифрами, 2 с высокими ставками, 1 история кейса и 2 контрастных. Длина 6–12 слов, минимум 3 начинаются с цифры. Выбери 1 лучшее, объясни почему победит по CTR и опиши обложку.",
+    },
+    {
+      id: "yt-us-factory-04",
+      title: "04. Хук на первую минуту (0–60 сек)",
+      category: "youtube-завод",
+      tags: ["youtube-завод", "хук", "сценарий"],
+      text: "Напиши первые 60 секунд закадрового сценария на разговорном американском английском (+ перевод на русский) для видео: [НАЗВАНИЕ]. Строго без клише ИИ (запрещены delve, unlock, game-changer, tapestry). Структура: 0–5 сек — самый сильный факт под обложку (без приветствий); 5–20 сек — усиление цифрой/поворотом; 20–40 сек — план, что зритель узнает к концу; 40–60 сек — второй мини-хук.",
+    },
+    {
+      id: "yt-us-factory-05",
+      title: "05. Полный сценарий + Раскадровка доски",
+      category: "youtube-завод",
+      tags: ["youtube-завод", "сценарий", "раскадровка"],
+      text: "Напиши полный сценарий на 8 минут на разговорном американском английском (+ перевод на русский) для видео: [НАЗВАНИЕ]. Без воды и штампов ИИ. 4 фазы: 0–1 мин хук; 1–3 мин завязка и риск/выгода зрителя; 3–7 мин основная часть с поворотом в середине и мини-хуком каждые 90 сек; 7–8 мин развязка и неожиданный финальный факт без просьб подписаться. Разбей на блоки по 10–15 сек и в [VISUAL: ...] укажи, что рисовать на белой доске и какую эмоцию показать 2D-персонажу.",
+    },
+    {
+      id: "yt-us-factory-06",
+      title: "06. ТЗ на обложку + Промт для 即梦AI",
+      category: "youtube-завод",
+      tags: ["youtube-завод", "обложка", "jimeng"],
+      text: "Составь ТЗ на обложку для YouTube-видео: [НАЗВАНИЕ]. Укажи: 1) Фон и контраст; 2) Главный объект и масштаб; 3) Текст на обложке (2–4 слова на английском); 4) Главную эмоцию и палитру из 2–3 цветов с HEX-кодами; 5) 2 A/B-варианта. В конце напиши готовый промт на английском и китайском языке для генерации этой обложки в 即梦AI (Jimeng AI) в формате 16:9.",
+    },
+    {
+      id: "yt-us-factory-07",
+      title: "07. Адаптация текста под озвучку (Edge-TTS)",
+      category: "youtube-завод",
+      tags: ["youtube-завод", "озвучка", "edge-tts"],
+      text: "Подготовь мой английский сценарий для озвучки через Edge-TTS (голос en-US-AndrewNeural): 1) Убери все [VISUAL: ...], оставив чистый текст диктора; 2) Замени все числа, проценты, даты и сокращения на слова ($1,500 -> fifteen hundred dollars); 3) Расставь короткие паузы через запятые и многоточия перед важными фактами.",
+    },
+  ];
+  const YT_US_FACTORY_IDS = new Set(YT_US_FACTORY_PRESETS.map((p) => p.id));
+
+  function clonePreset(p) {
+    return {
+      id: p.id,
+      title: p.title,
+      category: p.category,
+      tags: [...(p.tags || [])],
+      text: p.text,
+      presetPack: "yt-us-factory",
+    };
+  }
+
+  function matchPromptQuery(p, q) {
+    if (!q) return true;
+    const tags = (p.tags || []).join(" ");
+    return `${p.title} ${p.category || ""} ${tags} ${p.text}`.toLowerCase().includes(q);
+  }
+
+  /** Добавляет отсутствующие пресеты; личные и уже сохранённые не трогает. */
+  function ensureYtFactoryPresets() {
+    if (!isUnlocked()) return;
+    const have = new Set((getState().prompts || []).map((p) => p.id));
+    const missing = YT_US_FACTORY_PRESETS.filter((p) => !have.has(p.id));
+    if (!missing.length) return;
+    updateState((st) => {
+      if (!st.prompts) st.prompts = [];
+      missing
+        .slice()
+        .reverse()
+        .forEach((p) => st.prompts.unshift(clonePreset(p)));
     });
-    $("#prompt-list").innerHTML = list
-      .map(
-        (p) => `
-      <div class="prompt-card">
+  }
+
+  /** Перезаписывает только 7 id пакета; личные промты не удаляет. */
+  function restoreYtFactoryPresets() {
+    updateState((st) => {
+      if (!st.prompts) st.prompts = [];
+      YT_US_FACTORY_PRESETS.forEach((preset) => {
+        const i = st.prompts.findIndex((p) => p.id === preset.id);
+        const next = clonePreset(preset);
+        if (i >= 0) st.prompts[i] = next;
+        else st.prompts.unshift(next);
+      });
+    });
+    toast("Пресеты восстановлены");
+  }
+
+  function promptCardHtml(p, { preset = false } = {}) {
+    return `
+      <div class="prompt-card${preset ? " is-preset" : ""}">
         <div class="block-head" style="margin-bottom:6px">
           <h4>${esc(p.title)}</h4>
           <span class="chip">${esc((p.tags || [p.category]).filter(Boolean).join(", "))}</span>
         </div>
         <pre>${esc(p.text)}</pre>
         <div class="btn-row">
-          <button type="button" class="btn btn-primary btn-sm" data-copy="${p.id}">Скопировать в 1 клик</button>
-          <button type="button" class="btn btn-sm" data-edit-prompt="${p.id}">Изменить</button>
-          <button type="button" class="btn btn-sm btn-ghost" data-del-prompt="${p.id}">Удалить</button>
+          <button type="button" class="btn btn-primary btn-sm" data-copy="${esc(p.id)}">Скопировать</button>
+          ${
+            preset
+              ? ""
+              : `<button type="button" class="btn btn-sm" data-edit-prompt="${esc(p.id)}">Изменить</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-del-prompt="${esc(p.id)}">Удалить</button>`
+          }
         </div>
-      </div>`
-      )
-      .join("") || `<div class="empty">Ничего не найдено</div>`;
+      </div>`;
+  }
+
+  function findPromptById(id) {
+    return (
+      (getState().prompts || []).find((x) => x.id === id) ||
+      YT_US_FACTORY_PRESETS.find((x) => x.id === id) ||
+      null
+    );
+  }
+
+  function renderPrompts() {
+    ensureYtFactoryPresets();
+    const s = getState();
+    const q = (promptQuery || ($("#prm-search")?.value || "")).trim().toLowerCase();
+    const all = s.prompts || [];
+
+    const pack = YT_US_FACTORY_PRESETS.map((base) => {
+      const saved = all.find((p) => p.id === base.id);
+      return saved || clonePreset(base);
+    }).filter((p) => matchPromptQuery(p, q));
+
+    const personal = all
+      .filter((p) => !YT_US_FACTORY_IDS.has(p.id))
+      .filter((p) => matchPromptQuery(p, q));
+
+    const packRoot = $("#preset-pack-list");
+    if (packRoot) {
+      packRoot.innerHTML =
+        pack.map((p) => promptCardHtml(p, { preset: true })).join("") ||
+        `<div class="empty">Ничего не найдено в пакете</div>`;
+    }
+
+    $("#prompt-list").innerHTML =
+      personal.map((p) => promptCardHtml(p, { preset: false })).join("") ||
+      `<div class="empty">${q ? "Ничего не найдено" : "Пока нет личных промтов — добавьте ниже"}</div>`;
 
     const items = [
       ["hook", "Хук 0–12 сек"],
@@ -1299,12 +1426,16 @@
       renderPrompts();
     });
 
-    $("#prompt-list").addEventListener("click", async (e) => {
+    $("#btn-restore-presets")?.addEventListener("click", () => {
+      restoreYtFactoryPresets();
+    });
+
+    const onPromptClick = async (e) => {
       const copy = e.target.closest("[data-copy]");
       const del = e.target.closest("[data-del-prompt]");
       const edit = e.target.closest("[data-edit-prompt]");
       if (copy) {
-        const p = getState().prompts.find((x) => x.id === copy.dataset.copy);
+        const p = findPromptById(copy.dataset.copy);
         if (!p) return;
         try {
           await navigator.clipboard.writeText(p.text);
@@ -1314,11 +1445,13 @@
         }
       }
       if (del) {
+        if (YT_US_FACTORY_IDS.has(del.dataset.delPrompt)) return;
         updateState((st) => {
           st.prompts = st.prompts.filter((x) => x.id !== del.dataset.delPrompt);
         });
       }
       if (edit) {
+        if (YT_US_FACTORY_IDS.has(edit.dataset.editPrompt)) return;
         const p = getState().prompts.find((x) => x.id === edit.dataset.editPrompt);
         if (!p) return;
         const title = prompt("Название", p.title);
@@ -1337,7 +1470,10 @@
         });
         toast("Промт обновлён");
       }
-    });
+    };
+
+    $("#preset-pack-list")?.addEventListener("click", onPromptClick);
+    $("#prompt-list").addEventListener("click", onPromptClick);
 
     $("#publish-check").addEventListener("change", (e) => {
       const t = e.target;
