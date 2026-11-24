@@ -16,12 +16,20 @@ import os
 import socket
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# Последний HTTP-ответ Telegram/прокси (для диагностики перед exit)
+LAST_HTTP_RESPONSE: Dict[str, Any] = {
+    "status_code": None,
+    "text": None,
+    "url_safe": None,
+}
 
 BOT_DIR = Path(__file__).resolve().parent
 if str(BOT_DIR) not in sys.path:
@@ -123,8 +131,18 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
     return (d - today).days
 
 
+def tg_proxy_is_set() -> bool:
+    return bool(os.environ.get("TG_PROXY_URL", "").strip())
+
+
+def log_tg_proxy_flag() -> None:
+    """Печатает True/False без значения секрета."""
+    print(f"TG_PROXY_URL is set: {tg_proxy_is_set()}", file=sys.stderr)
+
+
 def telegram_api_base() -> tuple[str, str]:
     """Вернуть (base_url, source): source = 'TG_PROXY_URL' | 'api.telegram.org'."""
+    log_tg_proxy_flag()
     proxy = os.environ.get("TG_PROXY_URL", "").strip().rstrip("/")
     if proxy:
         print(
@@ -138,6 +156,20 @@ def telegram_api_base() -> tuple[str, str]:
         file=sys.stderr,
     )
     return base, "api.telegram.org"
+
+
+def remember_http_response(
+    status_code: Optional[int],
+    text: Optional[str],
+    *,
+    url_safe: Optional[str] = None,
+) -> None:
+    LAST_HTTP_RESPONSE["status_code"] = status_code
+    LAST_HTTP_RESPONSE["text"] = text
+    if url_safe is not None:
+        LAST_HTTP_RESPONSE["url_safe"] = url_safe
+    print(f"resp.status_code = {status_code!r}", file=sys.stderr)
+    print(f"resp.text = {(text if text is not None else '') or '(пусто)'}", file=sys.stderr)
 
 
 def _telegram_opener() -> urllib.request.OpenerDirector:
@@ -186,6 +218,7 @@ def _urllib_request(
     data: Optional[bytes] = None,
     timeout: int,
     opener: urllib.request.OpenerDirector,
+    url_safe: Optional[str] = None,
 ) -> Tuple[int, str]:
     req = urllib.request.Request(
         url,
@@ -201,10 +234,17 @@ def _urllib_request(
     try:
         with opener.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-            return int(getattr(resp, "status", 200) or 200), raw
+            status = int(getattr(resp, "status", 200) or 200)
+            remember_http_response(status, raw, url_safe=url_safe)
+            return status, raw
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
+        remember_http_response(int(exc.code), raw, url_safe=url_safe)
         return int(exc.code), raw
+    except Exception:
+        # Сетевые ошибки без HTTP-ответа
+        remember_http_response(None, None, url_safe=url_safe)
+        raise
 
 
 def send_telegram(text: str) -> None:
@@ -214,9 +254,10 @@ def send_telegram(text: str) -> None:
     token, chat_id = require_telegram_secrets()
     opener = _telegram_opener()
     api_base, base_source = telegram_api_base()
+    url_safe = f"{api_base}/bot***/sendMessage"
     # В лог — путь без токена
     print(
-        f"Telegram endpoint path: {api_base}/bot***/sendMessage (base={base_source})",
+        f"Telegram endpoint path: {url_safe} (base={base_source})",
         file=sys.stderr,
     )
     post_url = f"{api_base}/bot{token}/sendMessage"
@@ -245,6 +286,7 @@ def send_telegram(text: str) -> None:
                 data=payload,
                 timeout=TELEGRAM_TIMEOUT,
                 opener=opener,
+                url_safe=url_safe,
             )
             if status == 429:
                 retryable_failure = True
@@ -253,7 +295,7 @@ def send_telegram(text: str) -> None:
                 )
                 print(
                     f"WARN: HTTP 429 на попытке {attempt}/{TELEGRAM_POST_ATTEMPTS} — "
-                    f"точный ответ сервера: {body or '(пусто)'}",
+                    f"resp.status_code={status} resp.text={body or '(пусто)'}",
                     file=sys.stderr,
                 )
                 if attempt < TELEGRAM_POST_ATTEMPTS:
@@ -270,6 +312,11 @@ def send_telegram(text: str) -> None:
             print(
                 f"WARN: POST попытка {attempt}/{TELEGRAM_POST_ATTEMPTS} не удалась — "
                 f"точный текст ошибки: {msg}",
+                file=sys.stderr,
+            )
+            print(
+                f"WARN dump: resp.status_code={LAST_HTTP_RESPONSE.get('status_code')!r} "
+                f"resp.text={LAST_HTTP_RESPONSE.get('text')!r}",
                 file=sys.stderr,
             )
             if attempt < TELEGRAM_POST_ATTEMPTS and (_is_timeout_error(exc) or "429" in msg):
@@ -302,9 +349,10 @@ def send_telegram(text: str) -> None:
             get_url,
             timeout=TELEGRAM_GET_FALLBACK_TIMEOUT,
             opener=opener,
+            url_safe=url_safe,
         )
         print(
-            f"Telegram GET fallback status={status} exact body={body or '(пустой ответ)'}",
+            f"Telegram GET fallback resp.status_code={status} resp.text={body or '(пустой ответ)'}",
             file=sys.stderr,
         )
         _parse_telegram_body(status, body, context="GET-fallback")
@@ -315,6 +363,11 @@ def send_telegram(text: str) -> None:
         cur = str(exc).strip() or repr(exc) or type(exc).__name__
         print(
             f"ERROR detail: POST={prev or '429/timeout'} | GET={cur}",
+            file=sys.stderr,
+        )
+        print(
+            f"ERROR dump: resp.status_code={LAST_HTTP_RESPONSE.get('status_code')!r} "
+            f"resp.text={LAST_HTTP_RESPONSE.get('text')!r}",
             file=sys.stderr,
         )
         raise RuntimeError(
@@ -514,6 +567,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    log_tg_proxy_flag()
+
     # Сначала проверяем секреты Telegram — без них слать некуда
     require_telegram_secrets()
 
@@ -541,4 +596,15 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).strip() or repr(exc) or type(exc).__name__
         print(f"ERROR: {msg}", file=sys.stderr)
+        print("----- traceback -----", file=sys.stderr)
+        traceback.print_exc()
+        print("----- last HTTP response -----", file=sys.stderr)
+        print(f"resp.status_code = {LAST_HTTP_RESPONSE.get('status_code')!r}", file=sys.stderr)
+        print(
+            f"resp.text = {LAST_HTTP_RESPONSE.get('text') if LAST_HTTP_RESPONSE.get('text') is not None else '(нет ответа)'}",
+            file=sys.stderr,
+        )
+        if LAST_HTTP_RESPONSE.get("url_safe"):
+            print(f"url = {LAST_HTTP_RESPONSE.get('url_safe')}", file=sys.stderr)
+        print(f"TG_PROXY_URL is set: {tg_proxy_is_set()}", file=sys.stderr)
         raise SystemExit(1)
