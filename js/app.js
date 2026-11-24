@@ -2,9 +2,11 @@
   const {
     STAGES,
     STAGE_CHECK,
+    BUDGET_CATEGORIES,
     uid,
     todayISO,
     daysUntil,
+    scheduleNtfyReminder,
     getState,
     loadVaultMeta,
     unlockWithPassword,
@@ -17,6 +19,8 @@
     updateState,
     getGithubCreds,
     setGithubCreds,
+    getNtfyTopic,
+    setNtfyTopic,
     pushToGithub,
     pullFromGithub,
     onSyncStatus,
@@ -24,6 +28,11 @@
     onAuth,
     convertAmount,
   } = window.CC;
+
+  let focusTimer = null;
+  let focusLeftSec = 0;
+  let focusTotalSec = 0;
+  let promptQuery = "";
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -173,7 +182,42 @@
         e.dataTransfer.setData("text/plain", card.dataset.id);
       });
       card.addEventListener("dragend", () => card.classList.remove("dragging"));
-      card.addEventListener("click", () => openVideoModal(card.dataset.id));
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("button, label, input")) return;
+        openVideoModal(card.dataset.id);
+      });
+    });
+    $$("[data-advance]", root).forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        updateState((st) => {
+          const v = st.videos.find((x) => x.id === btn.dataset.advance);
+          if (!v) return;
+          v.stage = nextStageId(v.stage);
+          const key = STAGE_CHECK[v.stage];
+          if (key && v.checklist) v.checklist[key] = true;
+        });
+        toast("Этап сдвинут");
+      };
+    });
+    $$("[data-to-plan]", root).forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const v = getState().videos.find((x) => x.id === btn.dataset.toPlan);
+        if (!v) return;
+        updateState((st) => {
+          if (!st.dailyTasks) st.dailyTasks = [];
+          st.dailyTasks.push({
+            id: uid("dt"),
+            title: `YouTube: ${v.title}`,
+            date: todayISO(),
+            time: null,
+            priority: "high",
+            done: false,
+          });
+        });
+        toast("Добавлено в план на сегодня");
+      };
     });
 
     $$(".kanban-drop", root).forEach((zone) => {
@@ -204,34 +248,47 @@
     });
   }
 
+  function nextStageId(cur) {
+    const ids = STAGES.map((s) => s.id);
+    const i = ids.indexOf(cur);
+    return ids[Math.min(ids.length - 1, i + 1)];
+  }
+
   function videoCardHtml(v) {
-    const fmt = v.format === "shorts" ? "Shorts" : "Long 8–10 мин";
+    const fmt = v.format === "shorts" ? "Shorts" : "Long";
     const virClass = v.virality >= 70 ? "hot" : v.virality >= 45 ? "good" : "warn";
-    const checks = [
-      ["idea", "Идея"],
+    const ready = v.ready || {};
+    const readyItems = [
+      ["hook", "Хук"],
       ["script", "Сценарий"],
-      ["images", "Картинки"],
-      ["edit", "Монтаж"],
-      ["publish", "Публикация"],
+      ["thumb", "Обложка"],
+      ["voice", "Озвучка"],
+      ["render", "Рендер"],
     ];
     return `
       <div class="card" data-id="${v.id}">
         <p class="card-title">${esc(v.title)}</p>
         <div class="card-meta">
           <span class="chip">${fmt}</span>
-          <span class="chip ${virClass}">🔥 ${v.virality}%</span>
-          ${v.publishDate ? `<span class="chip">${v.publishDate}</span>` : ""}
+          <span class="chip ${virClass}">хук ${v.hookScore ?? 5}/10</span>
+          <span class="chip">🔥 ${v.virality}%</span>
+          ${v.niche ? `<span class="chip">${esc(v.niche)}</span>` : ""}
+          ${v.rpm ? `<span class="chip">RPM $${esc(v.rpm)}</span>` : ""}
         </div>
         <div class="mini-check">
-          ${checks
+          ${readyItems
             .map(
               ([k, label]) => `
             <label onclick="event.stopPropagation()">
-              <input type="checkbox" data-vid="${v.id}" data-key="${k}" ${v.checklist?.[k] ? "checked" : ""}>
+              <input type="checkbox" data-vid-ready="${v.id}" data-rkey="${k}" ${ready[k] ? "checked" : ""}>
               ${label}
             </label>`
             )
             .join("")}
+        </div>
+        <div class="btn-row" style="margin-top:8px" onclick="event.stopPropagation()">
+          <button type="button" class="btn btn-sm" data-advance="${v.id}">Этап →</button>
+          <button type="button" class="btn btn-sm btn-primary" data-to-plan="${v.id}">⚡ В план на сегодня</button>
         </div>
       </div>
     `;
@@ -247,6 +304,14 @@
             if (!v.checklist) v.checklist = {};
             v.checklist[t.dataset.key] = t.checked;
           }
+        });
+      }
+      if (t.matches("input[data-vid-ready]")) {
+        updateState((st) => {
+          const v = st.videos.find((x) => x.id === t.dataset.vidReady);
+          if (!v) return;
+          if (!v.ready) v.ready = {};
+          v.ready[t.dataset.rkey] = t.checked;
         });
       }
     });
@@ -292,9 +357,23 @@
             <input type="date" id="v-date" value="${v?.publishDate || ""}">
           </div>
         </div>
+        <div class="inline-fields">
+          <div class="field">
+            <label>Оценка хука 1–10</label>
+            <input type="number" id="v-hook" min="1" max="10" value="${v?.hookScore ?? 5}">
+          </div>
+          <div class="field">
+            <label>Ниша</label>
+            <input id="v-niche" value="${esc(v?.niche || "")}" placeholder="finance / ai">
+          </div>
+          <div class="field">
+            <label>RPM $</label>
+            <input type="number" id="v-rpm" min="0" step="0.1" value="${v?.rpm ?? 0}">
+          </div>
+        </div>
         <div class="field">
-          <label>Промты / заметки</label>
-          <textarea id="v-notes" placeholder="Промты для 即梦AI, идеи хука…">${esc(v?.notes || "")}</textarea>
+          <label>Сценарий / хук / промты</label>
+          <textarea id="v-notes" placeholder="Хук 0–12 сек, сценарий, промты 即梦AI…">${esc(v?.notes || "")}</textarea>
         </div>
         <div class="btn-row">
           <button class="btn btn-primary" id="v-save">Сохранить</button>
@@ -313,6 +392,9 @@
         stage: $("#v-stage").value,
         publishDate: $("#v-date").value || null,
         notes: $("#v-notes").value,
+        hookScore: Math.max(1, Math.min(10, Number($("#v-hook").value) || 5)),
+        niche: $("#v-niche").value.trim(),
+        rpm: Number($("#v-rpm").value) || 0,
       };
       updateState((st) => {
         if (editingVideoId) {
@@ -322,6 +404,7 @@
           st.videos.push({
             id: uid("vid"),
             checklist: { idea: true, script: false, images: false, edit: false, publish: false },
+            ready: { hook: false, script: false, thumb: false, voice: false, render: false },
             ...payload,
           });
         }
@@ -392,7 +475,7 @@
         (ev) => `
       <div class="cal-item" style="border-left:3px solid ${colorHex(ev.color)}">
         <div class="grow">
-          <div class="cal-item-title">${esc(ev.title)}</div>
+          <div class="cal-item-title">${esc(ev.title)}${ev.time ? ` · ⏰ ${esc(ev.time)}` : ""}</div>
           ${ev.note ? `<div class="cal-item-note">${esc(ev.note)}</div>` : ""}
         </div>
         <div class="btn-row">
@@ -467,6 +550,10 @@
           <textarea id="ev-note" placeholder="Подробности, чек-лист, ссылки…">${esc(ev?.note || "")}</textarea>
         </div>
         <div class="field">
+          <label>Напоминание (HH:MM, Asia/Shanghai) — необязательно</label>
+          <input type="time" id="ev-time" value="${esc(ev?.time || "")}">
+        </div>
+        <div class="field">
           <label>Цветная метка</label>
           <div class="color-picks" id="ev-colors">
             ${EVENT_COLORS.map(
@@ -492,28 +579,37 @@
       };
     });
     $("#ev-cancel").onclick = closeModal;
-    $("#ev-save").onclick = () => {
+    $("#ev-save").onclick = async () => {
       const title = $("#ev-title").value.trim();
       const note = $("#ev-note").value.trim();
       const date = $("#ev-date").value;
+      const time = ($("#ev-time").value || "").slice(0, 5) || null;
       const col = $("#ev-color").value || "blue";
       if (!title) return toast("Укажите заголовок");
       if (!date) return toast("Укажите дату");
+      let eventId = editingEventId;
       updateState((st) => {
         if (!st.calendarEvents) st.calendarEvents = [];
         if (editingEventId) {
           const cur = st.calendarEvents.find((x) => x.id === editingEventId);
-          if (cur) Object.assign(cur, { title, note, date, color: col });
+          if (cur) Object.assign(cur, { title, note, date, time, color: col });
         } else {
+          eventId = uid("cev");
           st.calendarEvents.push({
-            id: uid("cev"),
+            id: eventId,
             date,
             title,
             note,
+            time,
             color: col,
           });
         }
       });
+      if (time) {
+        const r = await scheduleNtfyReminder({ kind: "event", id: eventId, title, date, time });
+        if (r.ok && r.reason === "scheduled") toast(`Напоминание ntfy на ${time}`);
+        else if (!r.ok && r.reason === "no-topic") toast("Укажите ntfy topic в Настройках");
+      }
       selectedCalDay = date;
       closeModal();
       toast("Событие сохранено");
@@ -633,6 +729,105 @@
     });
   }
 
+  function fmtTimer(sec) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  function playTimerDone() {
+    try {
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.frequency.value = 880;
+      g.gain.value = 0.08;
+      o.start();
+      setTimeout(() => {
+        o.stop();
+        ctx.close();
+      }, 500);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function renderFocusTimer() {
+    const el = $("#focus-timer");
+    if (!el) return;
+    const running = !!focusTimer;
+    el.innerHTML = `
+      <div class="timer-display">${fmtTimer(focusLeftSec || focusTotalSec || 0)}</div>
+      <div class="btn-row" style="margin:10px 0">
+        <button type="button" class="btn btn-sm" data-ft="25" ${running ? "disabled" : ""}>25 мин</button>
+        <button type="button" class="btn btn-sm" data-ft="45" ${running ? "disabled" : ""}>45 мин</button>
+        <button type="button" class="btn btn-sm" data-ft="60" ${running ? "disabled" : ""}>60 мин</button>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" id="ft-toggle">${running ? "Стоп" : "Старт"}</button>
+        <button type="button" class="btn btn-ghost" id="ft-reset">Сброс</button>
+      </div>
+      <p class="muted" style="margin-top:8px">После 60 мин привычка «1 час работы над YouTube» отметится сама</p>`;
+    $$("#focus-timer [data-ft]").forEach((b) => {
+      b.onclick = () => {
+        if (focusTimer) return;
+        focusTotalSec = Number(b.dataset.ft) * 60;
+        focusLeftSec = focusTotalSec;
+        renderFocusTimer();
+      };
+    });
+    $("#ft-reset").onclick = () => {
+      clearInterval(focusTimer);
+      focusTimer = null;
+      focusLeftSec = focusTotalSec;
+      renderFocusTimer();
+    };
+    $("#ft-toggle").onclick = () => {
+      if (focusTimer) {
+        clearInterval(focusTimer);
+        focusTimer = null;
+        renderFocusTimer();
+        return;
+      }
+      if (!focusLeftSec) {
+        focusTotalSec = 25 * 60;
+        focusLeftSec = focusTotalSec;
+      }
+      focusTimer = setInterval(() => {
+        focusLeftSec -= 1;
+        if (focusLeftSec <= 0) {
+          clearInterval(focusTimer);
+          focusTimer = null;
+          focusLeftSec = 0;
+          playTimerDone();
+          if (focusTotalSec >= 3600) {
+            const today = todayISO();
+            updateState((st) => {
+              const hab = (st.habits || []).find((h) => /youtube/i.test(h.name) || /1 час/i.test(h.name));
+              if (hab) {
+                if (!st.habitLogs[today]) st.habitLogs[today] = {};
+                st.habitLogs[today][hab.id] = true;
+              }
+            });
+            recalcStreak();
+            toast("60 мин! YouTube-привычка отмечена");
+          } else {
+            toast("Фокус завершён");
+          }
+        }
+        renderFocusTimer();
+      }, 1000);
+      renderFocusTimer();
+    };
+  }
+
   function renderFocus() {
     const s = getState();
     const habits = s.habits.filter((h) => !h.archived);
@@ -655,38 +850,41 @@
       </div>
     `;
 
+    renderFocusTimer();
+
     $("#habit-list").innerHTML = habits
       .map(
         (h) => `
       <div class="habit-item ${habitDoneToday(h.id) ? "done" : ""}">
         <input type="checkbox" data-habit="${h.id}" ${habitDoneToday(h.id) ? "checked" : ""}>
-        <span class="grow">${esc(h.name)}</span>
-        <button class="btn btn-sm btn-ghost" data-del-habit="${h.id}" title="Удалить">✕</button>
+        <input class="habit-rename grow" data-rename="${h.id}" value="${esc(h.name)}">
+        <button type="button" class="btn btn-sm btn-ghost" data-del-habit="${h.id}" title="Удалить">✕</button>
       </div>`
       )
       .join("") || `<div class="empty">Добавьте привычки</div>`;
 
     const today = todayISO();
-    const tasks = s.tasks.filter((t) => t.date === today || (!t.done && !t.date));
-    const prioOrder = { high: 0, medium: 1, low: 2 };
+    const tasks = (s.dailyTasks || []).filter((t) => t.date === today);
+    const prioOrder = { high: 0, normal: 1 };
     tasks.sort((a, b) => (prioOrder[a.priority] ?? 9) - (prioOrder[b.priority] ?? 9));
 
     $("#task-list").innerHTML = tasks
       .map(
         (t) => `
       <div class="task-item ${t.done ? "done" : ""}">
-        <span class="prio ${t.priority}"></span>
-        <div>
-          <div class="task-title">${esc(t.title)}</div>
-          <div class="muted">${t.priority === "high" ? "Высокий" : t.priority === "medium" ? "Средний" : "Низкий"} приоритет</div>
+        <span class="prio ${t.priority === "high" ? "high" : "medium"}"></span>
+        <div class="grow">
+          <div class="task-title">${t.priority === "high" ? "🔥 " : "⚡ "}${esc(t.title)}</div>
+          <div class="muted">${t.time ? `⏰ ${esc(t.time)} · ` : ""}${t.priority === "high" ? "Главное" : "Обычное"}</div>
         </div>
         <div class="btn-row">
-          <button class="btn btn-sm" data-toggle-task="${t.id}">${t.done ? "↩" : "✓"}</button>
-          <button class="btn btn-sm btn-ghost" data-del-task="${t.id}">✕</button>
+          <button type="button" class="btn btn-sm" data-toggle-task="${t.id}">${t.done ? "↩" : "✓"}</button>
+          <button type="button" class="btn btn-sm" data-edit-task="${t.id}">✎</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-del-task="${t.id}">✕</button>
         </div>
       </div>`
       )
-      .join("") || `<div class="empty">Нет задач на сегодня</div>`;
+      .join("") || `<div class="empty">План на сегодня пуст</div>`;
   }
 
   function bindFocus() {
@@ -699,6 +897,17 @@
         st.habitLogs[today][t.dataset.habit] = t.checked;
       });
       recalcStreak();
+    });
+
+    $("#habit-list").addEventListener("change", (e) => {
+      const inp = e.target.closest("[data-rename]");
+      if (!inp) return;
+      const name = inp.value.trim();
+      if (!name) return;
+      updateState((st) => {
+        const h = st.habits.find((x) => x.id === inp.dataset.rename);
+        if (h) h.name = name;
+      });
     });
 
     $("#habit-list").addEventListener("click", (e) => {
@@ -720,36 +929,79 @@
       toast("Привычка добавлена");
     };
 
-    $("#btn-add-task").onclick = () => {
+    $("#btn-add-task").onclick = async () => {
       const title = $("#new-task").value.trim();
-      const priority = $("#new-task-prio").value;
+      const priority = $("#new-task-prio").value === "high" ? "high" : "normal";
+      const time = ($("#new-task-time").value || "").slice(0, 5) || null;
       if (!title) return;
+      const id = uid("dt");
+      const date = todayISO();
       updateState((st) => {
-        st.tasks.push({
-          id: uid("task"),
-          title,
-          priority,
-          done: false,
-          date: todayISO(),
-        });
+        if (!st.dailyTasks) st.dailyTasks = [];
+        st.dailyTasks.push({ id, title, priority, done: false, date, time });
       });
       $("#new-task").value = "";
-      toast("Задача добавлена");
+      $("#new-task-time").value = "";
+      if (time) {
+        const r = await scheduleNtfyReminder({ kind: "task", id, title, date, time });
+        if (r.ok && r.reason === "scheduled") toast(`Напоминание на ${time}`);
+        else if (r.reason === "no-topic") toast("Укажите ntfy topic в Настройках");
+      }
+      toast("В плане");
     };
 
-    $("#task-list").addEventListener("click", (e) => {
+    $("#btn-carry-tasks").onclick = () => {
+      const today = todayISO();
+      updateState((st) => {
+        (st.dailyTasks || []).forEach((t) => {
+          if (!t.done && t.date !== today) t.date = today;
+        });
+      });
+      toast("Невыполненное перенесено на сегодня");
+    };
+
+    $("#task-list").addEventListener("click", async (e) => {
       const toggle = e.target.closest("[data-toggle-task]");
       const del = e.target.closest("[data-del-task]");
+      const edit = e.target.closest("[data-edit-task]");
       if (toggle) {
         updateState((st) => {
-          const t = st.tasks.find((x) => x.id === toggle.dataset.toggleTask);
+          const t = (st.dailyTasks || []).find((x) => x.id === toggle.dataset.toggleTask);
           if (t) t.done = !t.done;
         });
       }
       if (del) {
         updateState((st) => {
-          st.tasks = st.tasks.filter((x) => x.id !== del.dataset.delTask);
+          st.dailyTasks = (st.dailyTasks || []).filter((x) => x.id !== del.dataset.delTask);
         });
+      }
+      if (edit) {
+        const t = (getState().dailyTasks || []).find((x) => x.id === edit.dataset.editTask);
+        if (!t) return;
+        const title = prompt("Заголовок задачи", t.title);
+        if (title == null) return;
+        const time = prompt("Время HH:MM (пусто = без напоминания)", t.time || "");
+        if (time == null) return;
+        const prio = confirm("Главный приоритет? OK = 🔥, Отмена = ⚡") ? "high" : "normal";
+        const tm = (time || "").trim().slice(0, 5) || null;
+        updateState((st) => {
+          const cur = (st.dailyTasks || []).find((x) => x.id === t.id);
+          if (cur) {
+            cur.title = title.trim() || cur.title;
+            cur.time = tm;
+            cur.priority = prio;
+          }
+        });
+        if (tm) {
+          await scheduleNtfyReminder({
+            kind: "task",
+            id: t.id,
+            title: title.trim() || t.title,
+            date: t.date || todayISO(),
+            time: tm,
+          });
+        }
+        toast("Задача обновлена");
       }
     });
   }
@@ -773,7 +1025,7 @@
     $("#budget-stats").innerHTML = `
       <div class="stat-row">
         <div class="stat"><span class="label">Расходы</span><span class="value neg">${formatMoney(expUsd, "USD")}</span><div class="muted">≈ ¥${expCny.toFixed(0)}</div></div>
-        <div class="stat"><span class="label">Доходы YT</span><span class="value pos">${formatMoney(incUsd, "USD")}</span></div>
+        <div class="stat"><span class="label">Доходы</span><span class="value pos">${formatMoney(incUsd, "USD")}</span></div>
         <div class="stat"><span class="label">Чистая прибыль</span><span class="value ${profit >= 0 ? "pos" : "neg"}">${formatMoney(profit, "USD")}</span></div>
       </div>
       <div class="field" style="max-width:200px">
@@ -787,13 +1039,51 @@
       });
     };
 
+    const fund = s.launchFund || { savedCny: 0, goalCny: 320, goalUsd: 45 };
+    const goalCny = fund.goalCny || 320;
+    const saved = fund.savedCny || 0;
+    const left = Math.max(0, goalCny - saved);
+    const fundPct = Math.min(100, (saved / goalCny) * 100);
+    const goalUsdApprox = fund.goalUsd || Math.round((goalCny / rate) * 10) / 10;
+    $("#launch-fund-block").innerHTML = `
+      <div class="block-head"><h3>🎯 Копилка на запуск ИИ-конвейера</h3>
+        <span class="chip">цель ¥${goalCny} / $${goalUsdApprox}</span>
+      </div>
+      <div class="thermo-row">
+        <div class="thermo-meta"><span>Накоплено</span><strong>¥${saved.toFixed(0)} / ¥${goalCny}</strong></div>
+        <div class="bar"><i style="width:${fundPct}%"></i></div>
+        <div class="muted">Осталось ¥${left.toFixed(0)} (Claude Pro + Static IP + 即梦AI)</div>
+      </div>
+      <div class="btn-row" style="margin-top:10px">
+        <div class="field" style="flex:1"><input type="number" id="fund-add" min="0" step="1" placeholder="¥ добавить"></div>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-fund-add">В копилку</button>
+        <button type="button" class="btn btn-sm" id="btn-fund-reset">Сброс</button>
+      </div>`;
+    $("#btn-fund-add").onclick = () => {
+      const add = Number($("#fund-add").value) || 0;
+      if (add <= 0) return;
+      updateState((st) => {
+        if (!st.launchFund) st.launchFund = { savedCny: 0, goalCny: 320, goalUsd: 45 };
+        st.launchFund.savedCny = (st.launchFund.savedCny || 0) + add;
+      });
+      toast("Добавлено в копилку");
+    };
+    $("#btn-fund-reset").onclick = () => {
+      updateState((st) => {
+        if (!st.launchFund) st.launchFund = { savedCny: 0, goalCny: 320, goalUsd: 45 };
+        st.launchFund.savedCny = 0;
+      });
+    };
+
+    const catLabel = (id) => BUDGET_CATEGORIES.find((c) => c.id === id)?.label || id || "";
+
     $("#expense-list").innerHTML = s.budget.expenses
       .map(
         (e) => `
       <div class="list-row">
         <div>
           <div>${esc(e.name)}</div>
-          <div class="muted">${e.date || ""} · ${esc(e.category || "")}</div>
+          <div class="muted">${e.date || ""} · ${esc(catLabel(e.category))}</div>
         </div>
         <div style="text-align:right">
           <strong>${formatMoney(e.amount, e.currency)}</strong>
@@ -856,6 +1146,7 @@
       const name = $("#exp-name").value.trim();
       const amount = Number($("#exp-amount").value);
       const currency = $("#exp-cur").value;
+      const category = $("#exp-cat")?.value || "ai";
       if (!name || !amount) return toast("Заполните расход");
       updateState((st) => {
         st.budget.expenses.push({
@@ -863,7 +1154,7 @@
           name,
           amount,
           currency,
-          category: "ai",
+          category,
           date: todayISO(),
         });
       });
@@ -876,6 +1167,7 @@
       const name = $("#inc-name").value.trim() || "YouTube";
       const amount = Number($("#inc-amount").value);
       const currency = $("#inc-cur").value;
+      const category = $("#inc-cat")?.value || "income";
       if (!amount && amount !== 0) return toast("Укажите сумму");
       updateState((st) => {
         st.budget.income.push({
@@ -883,6 +1175,7 @@
           name,
           amount,
           currency,
+          category,
           date: todayISO(),
         });
       });
@@ -950,22 +1243,29 @@
   /* ===================== PROMPTS ===================== */
   function renderPrompts() {
     const s = getState();
-    $("#prompt-list").innerHTML = s.prompts
+    const q = (promptQuery || ($("#prm-search")?.value || "")).trim().toLowerCase();
+    const list = (s.prompts || []).filter((p) => {
+      if (!q) return true;
+      const tags = (p.tags || []).join(" ");
+      return `${p.title} ${p.category || ""} ${tags} ${p.text}`.toLowerCase().includes(q);
+    });
+    $("#prompt-list").innerHTML = list
       .map(
         (p) => `
       <div class="prompt-card">
         <div class="block-head" style="margin-bottom:6px">
           <h4>${esc(p.title)}</h4>
-          <span class="chip">${esc(p.category || "")}</span>
+          <span class="chip">${esc((p.tags || [p.category]).filter(Boolean).join(", "))}</span>
         </div>
         <pre>${esc(p.text)}</pre>
         <div class="btn-row">
-          <button class="btn btn-primary btn-sm" data-copy="${p.id}">Скопировать в 1 клик</button>
-          <button class="btn btn-sm btn-ghost" data-del-prompt="${p.id}">Удалить</button>
+          <button type="button" class="btn btn-primary btn-sm" data-copy="${p.id}">Скопировать в 1 клик</button>
+          <button type="button" class="btn btn-sm" data-edit-prompt="${p.id}">Изменить</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-del-prompt="${p.id}">Удалить</button>
         </div>
       </div>`
       )
-      .join("") || `<div class="empty">Библиотека пуста</div>`;
+      .join("") || `<div class="empty">Ничего не найдено</div>`;
 
     const items = [
       ["hook", "Хук 0–12 сек"],
@@ -994,15 +1294,21 @@
   }
 
   function bindPrompts() {
+    $("#prm-search")?.addEventListener("input", () => {
+      promptQuery = $("#prm-search").value;
+      renderPrompts();
+    });
+
     $("#prompt-list").addEventListener("click", async (e) => {
       const copy = e.target.closest("[data-copy]");
       const del = e.target.closest("[data-del-prompt]");
+      const edit = e.target.closest("[data-edit-prompt]");
       if (copy) {
         const p = getState().prompts.find((x) => x.id === copy.dataset.copy);
         if (!p) return;
         try {
           await navigator.clipboard.writeText(p.text);
-          toast("Скопировано");
+          toast("Скопировано!");
         } catch {
           toast("Не удалось скопировать");
         }
@@ -1011,6 +1317,25 @@
         updateState((st) => {
           st.prompts = st.prompts.filter((x) => x.id !== del.dataset.delPrompt);
         });
+      }
+      if (edit) {
+        const p = getState().prompts.find((x) => x.id === edit.dataset.editPrompt);
+        if (!p) return;
+        const title = prompt("Название", p.title);
+        if (title == null) return;
+        const tags = prompt("Теги через запятую", (p.tags || []).join(", "));
+        if (tags == null) return;
+        const text = prompt("Текст промта", p.text);
+        if (text == null) return;
+        updateState((st) => {
+          const cur = st.prompts.find((x) => x.id === p.id);
+          if (!cur) return;
+          cur.title = title.trim() || cur.title;
+          cur.tags = tags.split(",").map((t) => t.trim()).filter(Boolean);
+          cur.category = cur.tags[0] || cur.category || "custom";
+          cur.text = text;
+        });
+        toast("Промт обновлён");
       }
     });
 
@@ -1025,13 +1350,23 @@
     $("#btn-add-prompt").onclick = () => {
       const title = $("#prm-title").value.trim();
       const text = $("#prm-text").value.trim();
-      const category = $("#prm-cat").value.trim() || "custom";
+      const tags = ($("#prm-cat").value || "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
       if (!title || !text) return toast("Заполните название и текст");
       updateState((st) => {
-        st.prompts.push({ id: uid("prm"), title, text, category });
+        st.prompts.push({
+          id: uid("prm"),
+          title,
+          text,
+          tags,
+          category: tags[0] || "custom",
+        });
       });
       $("#prm-title").value = "";
       $("#prm-text").value = "";
+      $("#prm-cat").value = "";
       toast("Промт добавлен");
     };
   }
@@ -1042,6 +1377,7 @@
     $("#gh-token").value = c.token || "";
     $("#gh-owner").value = c.owner || "";
     $("#gh-repo").value = c.repo || "";
+    if ($("#ntfy-topic")) $("#ntfy-topic").value = getNtfyTopic();
     $("#settings-updated").textContent = getState().updatedAt
       ? `Последнее обновление state: ${new Date(getState().updatedAt).toLocaleString("ru-RU")}`
       : "";
@@ -1054,6 +1390,7 @@
         owner: $("#gh-owner").value.trim(),
         repo: $("#gh-repo").value.trim(),
       });
+      if ($("#ntfy-topic")) setNtfyTopic($("#ntfy-topic").value.trim());
       toast("Учётные данные сохранены в браузере");
       window.CC.setSyncStatus(getGithubCreds().token ? "ok" : "idle");
     };

@@ -113,9 +113,43 @@
     <!-- 2. Focus -->
     <section class="panel" id="panel-focus">
       <h2 class="section-title">Фокус и дисциплина</h2>
-      <p class="section-sub">Привычки, серия дней и быстрые задачи на сегодня</p>
+      <p class="section-sub">План дня, привычки, streak и таймер фокуса</p>
 
       <div class="block" id="streak-block"></div>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>⏱ Таймер фокуса</h3>
+        </div>
+        <div id="focus-timer"></div>
+      </div>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>📋 План на день</h3>
+          <button type="button" class="btn btn-sm" id="btn-carry-tasks">Перенести невыполненное на сегодня</button>
+        </div>
+        <div id="task-list"></div>
+        <div class="form-grid" style="margin-top:10px">
+          <div class="field">
+            <input id="new-task" placeholder="Задача в 1 строку…" autocomplete="off">
+          </div>
+          <div class="inline-fields">
+            <div class="field">
+              <label>Время (нпк)</label>
+              <input type="time" id="new-task-time">
+            </div>
+            <div class="field">
+              <label>Приоритет</label>
+              <select id="new-task-prio">
+                <option value="high">🔥 Главное</option>
+                <option value="normal" selected>⚡ Обычное</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" class="btn btn-primary" id="btn-add-task">+ В план</button>
+        </div>
+      </div>
 
       <div class="block">
         <div class="block-head">
@@ -124,30 +158,10 @@
         <div class="habit-list" id="habit-list"></div>
         <div class="btn-row" style="margin-top:10px">
           <div class="field" style="flex:1;min-width:160px">
-            <input id="new-habit" placeholder="Новая привычка…">
+            <input id="new-habit" placeholder="Новая привычка…" autocomplete="off">
           </div>
-          <button class="btn btn-primary" id="btn-add-habit">Добавить</button>
+          <button type="button" class="btn btn-primary" id="btn-add-habit">Добавить</button>
         </div>
-      </div>
-
-      <div class="block">
-        <div class="block-head">
-          <h3>Быстрые задачи на сегодня</h3>
-        </div>
-        <div id="task-list"></div>
-        <div class="inline-fields" style="margin-top:10px">
-          <div class="field">
-            <input id="new-task" placeholder="Задача…">
-          </div>
-          <div class="field">
-            <select id="new-task-prio">
-              <option value="high">Высокий</option>
-              <option value="medium" selected>Средний</option>
-              <option value="low">Низкий</option>
-            </select>
-          </div>
-        </div>
-        <button class="btn btn-primary" id="btn-add-task" style="margin-top:8px">Добавить задачу</button>
       </div>
     </section>
 
@@ -161,9 +175,11 @@
         <div id="budget-stats"></div>
       </div>
 
+      <div class="block" id="launch-fund-block"></div>
+
       <div class="grid-2">
         <div class="block">
-          <div class="block-head"><h3>Расходы (нейросети / инструменты)</h3></div>
+          <div class="block-head"><h3>Расходы</h3></div>
           <div id="expense-list"></div>
           <div class="form-grid" style="margin-top:10px">
             <div class="field"><label>Название</label><input id="exp-name" placeholder="Claude Pro"></div>
@@ -173,12 +189,20 @@
                 <select id="exp-cur"><option value="CNY">¥ CNY</option><option value="USD">$ USD</option></select>
               </div>
             </div>
-            <button class="btn btn-primary btn-sm" id="btn-add-exp">Добавить расход</button>
+            <div class="field"><label>Категория</label>
+              <select id="exp-cat">
+                <option value="ai">Подписки ИИ</option>
+                <option value="proxy">Прокси/VPN</option>
+                <option value="gear">Техника</option>
+                <option value="life">Жизнь/Еда</option>
+              </select>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-add-exp">Добавить расход</button>
           </div>
         </div>
 
         <div class="block">
-          <div class="block-head"><h3>Доходы YouTube</h3></div>
+          <div class="block-head"><h3>Доходы</h3></div>
           <div id="income-list"></div>
           <div class="form-grid" style="margin-top:10px">
             <div class="field"><label>Название</label><input id="inc-name" placeholder="YouTube AdSense"></div>
@@ -188,7 +212,10 @@
                 <select id="inc-cur"><option value="USD">$ USD</option><option value="CNY">¥ CNY</option></select>
               </div>
             </div>
-            <button class="btn btn-primary btn-sm" id="btn-add-inc">Добавить доход</button>
+            <div class="field"><label>Категория</label>
+              <select id="inc-cat"><option value="income">Доход</option></select>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-add-inc">Добавить доход</button>
           </div>
         </div>
       </div>
@@ -222,12 +249,15 @@
 
       <div class="block">
         <div class="block-head"><h3>Библиотека промтов</h3></div>
+        <div class="field" style="margin-bottom:10px">
+          <input id="prm-search" placeholder="Поиск по названию / тегам…" autocomplete="off">
+        </div>
         <div id="prompt-list"></div>
         <div class="form-grid" style="margin-top:12px">
           <div class="field"><label>Название</label><input id="prm-title" placeholder="Мой промт"></div>
-          <div class="field"><label>Категория</label><input id="prm-cat" placeholder="jimeng / claude / script"></div>
+          <div class="field"><label>Теги</label><input id="prm-cat" placeholder="jimeng, claude, script"></div>
           <div class="field"><label>Текст</label><textarea id="prm-text" placeholder="Текст промта…"></textarea></div>
-          <button class="btn btn-primary btn-sm" id="btn-add-prompt">Добавить промт</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-add-prompt">Добавить промт</button>
         </div>
       </div>
     </section>
@@ -257,6 +287,10 @@
               <label>Repo</label>
               <input id="gh-repo" placeholder="command-center">
             </div>
+          </div>
+          <div class="field">
+            <label>ntfy topic (для точных напоминаний HH:MM)</label>
+            <input id="ntfy-topic" placeholder="ваш-секретный-топик" autocomplete="off">
           </div>
           <div class="btn-row">
             <button class="btn btn-primary" id="btn-save-gh">Сохранить в браузере</button>

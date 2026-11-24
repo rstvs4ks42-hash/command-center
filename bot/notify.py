@@ -283,7 +283,8 @@ def calendar_blocks(state: Dict[str, Any], today: date) -> List[str]:
         for ev in today_ev:
             title = ev.get("title") or "Событие"
             note = (ev.get("note") or "").strip()
-            lines.append(f"• {title}")
+            tm = (ev.get("time") or "").strip()
+            lines.append(f"• {title}" + (f" · ⏰ {tm}" if tm else ""))
             if note:
                 lines.append(f"  {note}")
 
@@ -295,9 +296,33 @@ def calendar_blocks(state: Dict[str, Any], today: date) -> List[str]:
         for ev in tomorrow_ev:
             title = ev.get("title") or "Событие"
             note = (ev.get("note") or "").strip()
-            lines.append(f"• {title}")
+            tm = (ev.get("time") or "").strip()
+            lines.append(f"• {title}" + (f" · ⏰ {tm}" if tm else ""))
             if note:
                 lines.append(f"  {note}")
+    return lines
+
+
+def timed_tasks_block(state: Dict[str, Any], today: date) -> List[str]:
+    """Задачи dailyTasks с точным временем на сегодня — в утренний брифинг."""
+    key = today.isoformat()
+    tasks = []
+    for t in state.get("dailyTasks") or state.get("tasks") or []:
+        if t.get("done"):
+            continue
+        if (t.get("date") or "")[:10] != key:
+            continue
+        tm = (t.get("time") or "").strip()
+        if not tm:
+            continue
+        tasks.append(t)
+    tasks.sort(key=lambda x: (x.get("time") or "99:99", x.get("title") or ""))
+    if not tasks:
+        return []
+    lines = ["", "⏰ Задачи с точным временем сегодня"]
+    for t in tasks:
+        prio = "🔥" if t.get("priority") == "high" else "⚡"
+        lines.append(f"{prio} {t.get('time')} — {t.get('title') or 'Задача'}")
     return lines
 
 
@@ -339,6 +364,7 @@ def morning_message(state: Dict[str, Any]) -> str:
         lines.extend(warns)
 
     lines.extend(calendar_blocks(state, today))
+    lines.extend(timed_tasks_block(state, today))
 
     streak = (state.get("streak") or {}).get("current") or 0
     lines.append("")

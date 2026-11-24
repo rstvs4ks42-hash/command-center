@@ -5,15 +5,25 @@
 
 const STATE_PATH = "data/state.json";
 const LS_GITHUB = "cc_github_creds";
+const LS_NTFY = "cc_ntfy_topic";
 const LS_VAULT = "cc_vault_cache";
 const SS_PASSWORD = "cc_app_password";
+const NTFY_CLICK = "https://rstvs4ks42-hash.github.io/command-center/";
 
 const STAGES = [
-  { id: "idea", label: "Идея" },
-  { id: "script", label: "Сценарий/Голос" },
-  { id: "images", label: "Картинки 即梦AI" },
-  { id: "edit", label: "Монтаж Remotion" },
-  { id: "published", label: "Опубликовано" },
+  { id: "idea", label: "💡 Идея" },
+  { id: "script", label: "✍️ Сценарий" },
+  { id: "images", label: "🎨 Визуал/Озвучка" },
+  { id: "edit", label: "🎬 Монтаж" },
+  { id: "published", label: "🚀 Опубликовано" },
+];
+
+const BUDGET_CATEGORIES = [
+  { id: "ai", label: "Подписки ИИ" },
+  { id: "proxy", label: "Прокси/VPN" },
+  { id: "gear", label: "Техника" },
+  { id: "life", label: "Жизнь/Еда" },
+  { id: "income", label: "Доход" },
 ];
 
 const STAGE_CHECK = {
@@ -43,7 +53,10 @@ const DEFAULT_STATE = {
   habitLogs: {},
   streak: { current: 0, best: 0, lastCompleteDate: null },
   tasks: [],
+  dailyTasks: [],
   calendarEvents: [],
+  sentReminderIds: [],
+  launchFund: { savedCny: 0, goalCny: 320, goalUsd: 45 },
   budget: { exchangeRate: 7.2, expenses: [], income: [] },
   subscriptions: [
     {
@@ -151,6 +164,80 @@ function getGithubCreds() {
 
 function setGithubCreds(creds) {
   localStorage.setItem(LS_GITHUB, JSON.stringify(creds));
+}
+
+function getNtfyTopic() {
+  try {
+    return (localStorage.getItem(LS_NTFY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function setNtfyTopic(topic) {
+  localStorage.setItem(LS_NTFY, (topic || "").trim());
+}
+
+/** ISO datetime in Asia/Shanghai (+08:00) for date YYYY-MM-DD + HH:MM */
+function shanghaiIso(dateStr, timeStr) {
+  const t = (timeStr || "09:00").slice(0, 5);
+  return `${dateStr}T${t}:00+08:00`;
+}
+
+function reminderKey(kind, id, dateStr, timeStr) {
+  return `${kind}:${id}:${dateStr}:${timeStr}`;
+}
+
+/**
+ * Планирует отложенный пуш ntfy (заголовок At: ISO+08:00).
+ * Дедуп через state.sentReminderIds.
+ */
+async function scheduleNtfyReminder({ kind, id, title, date, time }) {
+  if (!date || !time) return { ok: false, reason: "no-time" };
+  const topic = getNtfyTopic();
+  if (!topic) return { ok: false, reason: "no-topic" };
+
+  const key = reminderKey(kind, id, date, time);
+  if (!state.sentReminderIds) state.sentReminderIds = [];
+  if (state.sentReminderIds.includes(key)) return { ok: true, reason: "already" };
+
+  const at = shanghaiIso(date, time);
+  const atMs = Date.parse(at);
+  if (!Number.isFinite(atMs) || atMs <= Date.now() - 30_000) {
+    return { ok: false, reason: "past" };
+  }
+
+  const body = `⏰ Напоминание на ${time}: ${title || "Без названия"}`;
+  try {
+    const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+      method: "POST",
+      headers: {
+        Title: "YouTube Command Center",
+        Priority: "default",
+        Tags: "alarm_clock",
+        At: at,
+        Click: NTFY_CLICK,
+        Actions: `view, Open App, ${NTFY_CLICK}`,
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+      body,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      console.error("ntfy schedule failed", res.status, text);
+      return { ok: false, reason: `http-${res.status}` };
+    }
+    state.sentReminderIds.push(key);
+    // trim old ids
+    if (state.sentReminderIds.length > 400) {
+      state.sentReminderIds = state.sentReminderIds.slice(-300);
+    }
+    await persistLocal();
+    return { ok: true, reason: "scheduled", at };
+  } catch (e) {
+    console.error(e);
+    return { ok: false, reason: e.message || "network" };
+  }
 }
 
 function onSyncStatus(fn) {
@@ -294,11 +381,50 @@ function ensureDefaults() {
   if (!state.videos) state.videos = [];
   if (!state.tasks) state.tasks = [];
   if (!Array.isArray(state.calendarEvents)) state.calendarEvents = [];
+  if (!Array.isArray(state.sentReminderIds)) state.sentReminderIds = [];
+  if (!state.launchFund) state.launchFund = { savedCny: 0, goalCny: 320, goalUsd: 45 };
   if (!state.prompts) state.prompts = JSON.parse(JSON.stringify(DEFAULT_STATE.prompts));
   if (!state.subscriptions) state.subscriptions = [];
   if (!state.monetization) {
     state.monetization = JSON.parse(JSON.stringify(DEFAULT_STATE.monetization));
   }
+  // migrate tasks → dailyTasks
+  if (!Array.isArray(state.dailyTasks)) {
+    state.dailyTasks = (state.tasks || []).map((t) => ({
+      id: t.id || uid("dt"),
+      title: t.title || "",
+      date: t.date || todayISO(),
+      time: t.time || null,
+      priority: t.priority === "high" ? "high" : "normal",
+      done: !!t.done,
+    }));
+  }
+  state.dailyTasks.forEach((t) => {
+    if (t.priority === "medium" || t.priority === "low") t.priority = "normal";
+    if (t.time === undefined) t.time = null;
+  });
+  state.calendarEvents.forEach((ev) => {
+    if (ev.time === undefined) ev.time = null;
+  });
+  state.videos.forEach((v) => {
+    if (v.hookScore == null) v.hookScore = 5;
+    if (v.niche == null) v.niche = "";
+    if (v.rpm == null) v.rpm = 0;
+    if (!v.ready) {
+      v.ready = {
+        hook: !!v.checklist?.idea,
+        script: !!v.checklist?.script,
+        thumb: false,
+        voice: false,
+        render: !!v.checklist?.edit,
+      };
+    }
+  });
+  state.prompts.forEach((p) => {
+    if (!Array.isArray(p.tags)) {
+      p.tags = p.category ? [String(p.category)] : [];
+    }
+  });
 }
 
 async function persistVaultCache() {
@@ -567,10 +693,13 @@ function convertAmount(amount, from, to, rate) {
 window.CC = {
   STAGES,
   STAGE_CHECK,
+  BUDGET_CATEGORIES,
   DEFAULT_STATE,
   uid,
   todayISO,
   daysUntil,
+  shanghaiIso,
+  scheduleNtfyReminder,
   getState,
   loadVaultMeta,
   unlockWithPassword,
@@ -584,6 +713,8 @@ window.CC = {
   persistLocal,
   getGithubCreds,
   setGithubCreds,
+  getNtfyTopic,
+  setNtfyTopic,
   pushToGithub,
   pullFromGithub,
   onSyncStatus,
