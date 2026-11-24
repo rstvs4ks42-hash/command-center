@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -23,11 +25,20 @@ if str(BOT_DIR) not in sys.path:
 
 try:
     import requests
+    import urllib3.util.connection as urllib3_cn
 except ImportError:  # pragma: no cover
     print("Установите зависимости: pip install -r bot/requirements.txt", file=sys.stderr)
     sys.exit(1)
 
+# GitHub Actions иногда резолвит api.telegram.org в IPv6 → Read timed out.
+# Принудительно используем только IPv4.
+urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
+
 from crypto_util import load_and_decrypt
+
+TELEGRAM_TIMEOUT = 20
+TELEGRAM_RETRIES = 3
+TELEGRAM_RETRY_PAUSE = 3
 
 # Время Китая (Нанкин) UTC+8
 CN_TZ = timezone(timedelta(hours=8))
@@ -102,21 +113,46 @@ def send_telegram(text: str) -> None:
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-    resp = requests.post(url, json=payload, timeout=30)
-    body = (resp.text or "").strip()
-    print(f"Telegram HTTP {resp.status_code}: {body or '(пустой ответ)'}", file=sys.stderr)
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"Telegram API error {resp.status_code}: {body or '(пустой ответ)'}")
+    last_error: Optional[BaseException] = None
+    for attempt in range(1, TELEGRAM_RETRIES + 1):
+        try:
+            print(
+                f"Telegram send attempt {attempt}/{TELEGRAM_RETRIES} (IPv4, timeout={TELEGRAM_TIMEOUT}s)",
+                file=sys.stderr,
+            )
+            resp = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
+        except (requests.exceptions.RequestException, OSError) as exc:
+            last_error = exc
+            msg = str(exc).strip() or repr(exc) or type(exc).__name__
+            print(f"WARN: попытка {attempt}/{TELEGRAM_RETRIES} не удалась — {msg}", file=sys.stderr)
+            if attempt < TELEGRAM_RETRIES:
+                time.sleep(TELEGRAM_RETRY_PAUSE)
+            continue
 
-    try:
-        data = resp.json()
-    except Exception:  # noqa: BLE001
-        raise RuntimeError(f"Telegram вернул не-JSON ответ: {body or '(пусто)'}") from None
+        body = (resp.text or "").strip()
+        print(f"Telegram HTTP {resp.status_code}: {body or '(пустой ответ)'}", file=sys.stderr)
 
-    if not data.get("ok"):
-        desc = data.get("description") or body or "неизвестная ошибка Telegram"
-        raise RuntimeError(f"Telegram API ok=false: {desc}")
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Telegram API error {resp.status_code}: {body or '(пустой ответ)'}"
+            )
+
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            raise RuntimeError(f"Telegram вернул не-JSON ответ: {body or '(пусто)'}") from None
+
+        if not data.get("ok"):
+            desc = data.get("description") or body or "неизвестная ошибка Telegram"
+            raise RuntimeError(f"Telegram API ok=false: {desc}")
+
+        return
+
+    err = str(last_error).strip() if last_error else "неизвестная ошибка"
+    if not err and last_error is not None:
+        err = repr(last_error) or type(last_error).__name__
+    raise RuntimeError(f"Telegram: не удалось отправить после {TELEGRAM_RETRIES} попыток — {err}")
 
 
 def monetization_block(state: Dict[str, Any]) -> str:
