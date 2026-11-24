@@ -25,6 +25,7 @@
     setGithubCreds,
     getNtfyTopic,
     setNtfyTopic,
+    sendNtfyTestPush,
     pushToGithub,
     pullFromGithub,
     onSyncStatus,
@@ -1164,18 +1165,31 @@
         <button type="button" class="btn btn-sm" id="btn-ws-copy">Копировать день</button>
       </div>`;
 
-    $("#btn-ws-add").onclick = () => {
+    $("#btn-ws-add").onclick = async () => {
       const title = $("#ws-new-title").value.trim();
       const time = normalizeTimeHHMM($("#ws-new-time").value);
       const priority = $("#ws-new-prio").value === "high" ? "high" : "normal";
       if (!title) return toast("Укажите название");
+      const id = uid("ws");
       updateState((st) => {
         if (!st.weeklySchedule[day]) st.weeklySchedule[day] = [];
-        st.weeklySchedule[day].push({ id: uid("ws"), title, time, priority });
+        st.weeklySchedule[day].push({ id, title, time, priority });
       });
       $("#ws-new-title").value = "";
       $("#ws-new-time").value = "";
-      toast("Пункт шаблона добавлен");
+      const todayKey = weekdayKeyFromISO(todayISO());
+      if (time && day === todayKey) {
+        const r = await scheduleNtfyReminder({
+          kind: "task",
+          id,
+          title,
+          date: todayISO(),
+          time,
+        });
+        if (r.ok && r.reason === "scheduled") toast(`Шаблон + пуш на ${time}`);
+        else if (r.reason === "no-topic") toast("Укажите ntfy topic в Синхр.");
+        else toast("Пункт шаблона добавлен");
+      } else toast("Пункт шаблона добавлен");
     };
 
     $("#btn-ws-copy").onclick = () => {
@@ -1230,18 +1244,31 @@
       </div>`;
     $("#modal").classList.add("open");
     $("#ws-edit-cancel").onclick = closeModal;
-    $("#ws-edit-save").onclick = () => {
+    $("#ws-edit-save").onclick = async () => {
       const title = $("#ws-edit-title").value.trim();
       if (!title) return toast("Укажите название");
+      const tm = normalizeTimeHHMM($("#ws-edit-time").value);
       updateState((st) => {
         const cur = (st.weeklySchedule[dayKey] || []).find((x) => x.id === itemId);
         if (!cur) return;
         cur.title = title;
-        cur.time = normalizeTimeHHMM($("#ws-edit-time").value);
+        cur.time = tm;
         cur.priority = $("#ws-edit-prio").value === "high" ? "high" : "normal";
       });
       closeModal();
-      toast("Пункт шаблона обновлён");
+      const todayKey = weekdayKeyFromISO(todayISO());
+      if (tm && dayKey === todayKey) {
+        const r = await scheduleNtfyReminder({
+          kind: "task",
+          id: itemId,
+          title,
+          date: todayISO(),
+          time: tm,
+        });
+        if (r.ok && r.reason === "scheduled") toast(`Пуш шаблона на ${tm}`);
+        else if (r.reason === "no-topic") toast("Укажите ntfy topic в Синхр.");
+        else toast("Пункт шаблона обновлён");
+      } else toast("Пункт шаблона обновлён");
     };
   }
 
@@ -1556,10 +1583,10 @@
       $("#new-task-time").value = "";
       if (time) {
         const r = await scheduleNtfyReminder({ kind: "task", id, title, date, time });
-        if (r.ok && r.reason === "scheduled") toast(`Напоминание на ${time}`);
-        else if (r.reason === "no-topic") toast("Укажите ntfy topic в Настройках");
-      }
-      toast("В плане");
+        if (r.ok && r.reason === "scheduled") toast(`В плане · пуш на ${time}`);
+        else if (r.reason === "no-topic") toast("Укажите ntfy topic в Синхр.");
+        else toast("В плане");
+      } else toast("В плане");
     };
 
     $("#btn-carry-tasks").onclick = async () => {
@@ -2203,24 +2230,40 @@
   }
 
   function bindSettings() {
-    $("#btn-save-gh").onclick = () => {
+    $("#btn-save-gh").onclick = async () => {
       setGithubCreds({
         token: $("#gh-token").value.trim(),
         owner: $("#gh-owner").value.trim(),
         repo: $("#gh-repo").value.trim(),
       });
       if ($("#ntfy-topic")) setNtfyTopic($("#ntfy-topic").value.trim());
-      toast("Учётные данные сохранены в браузере");
+      try {
+        await window.CC.persistLocal();
+      } catch (_) {
+        /* vault may be locked — localStorage уже обновлён */
+      }
+      toast("Учётные данные и ntfy topic сохранены");
       window.CC.setSyncStatus(getGithubCreds().token ? "ok" : "idle");
     };
 
-    $("#btn-push").onclick = async () => {
+    if ($("#btn-ntfy-test")) {
+      $("#btn-ntfy-test").onclick = async () => {
+        if ($("#ntfy-topic")) setNtfyTopic($("#ntfy-topic").value.trim());
+        const r = await sendNtfyTestPush();
+        if (r.ok) toast("Тестовый пуш отправлен — проверьте iPhone");
+        else if (r.reason === "no-topic") toast("Сначала укажите ntfy topic");
+        else toast(`Ошибка пуша: ${r.reason || "сеть"}`);
+      };
+    }
+
+        $("#btn-push").onclick = async () => {
       try {
         setGithubCreds({
           token: $("#gh-token").value.trim(),
           owner: $("#gh-owner").value.trim(),
           repo: $("#gh-repo").value.trim(),
         });
+        if ($("#ntfy-topic")) setNtfyTopic($("#ntfy-topic").value.trim());
         await pushToGithub(true);
         toast("Зашифрованный state отправлен");
       } catch (e) {

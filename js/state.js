@@ -66,6 +66,7 @@ const DEFAULT_STATE = {
   weeklyScheduleAppliedDate: null,
   calendarEvents: [],
   sentReminderIds: [],
+  ntfyTopic: "",
   launchFund: {
     title: "Копилка на запуск ИИ-конвейера",
     savedCny: 0,
@@ -183,14 +184,23 @@ function setGithubCreds(creds) {
 
 function getNtfyTopic() {
   try {
-    return (localStorage.getItem(LS_NTFY) || "").trim();
+    const fromLs = (localStorage.getItem(LS_NTFY) || "").trim();
+    if (fromLs) return fromLs;
   } catch {
-    return "";
+    /* ignore */
   }
+  if (state && state.ntfyTopic) return String(state.ntfyTopic).trim();
+  return "";
 }
 
 function setNtfyTopic(topic) {
-  localStorage.setItem(LS_NTFY, (topic || "").trim());
+  const t = (topic || "").trim();
+  try {
+    localStorage.setItem(LS_NTFY, t);
+  } catch {
+    /* ignore */
+  }
+  if (state) state.ntfyTopic = t;
 }
 
 /** ISO datetime in Asia/Shanghai (+08:00) for date YYYY-MM-DD + HH:MM */
@@ -245,22 +255,43 @@ function reminderKey(kind, id, dateStr, timeStr) {
 
 /**
  * Планирует отложенный пуш ntfy (заголовок At: ISO+08:00).
+ * Вызов: scheduleNtfyReminder(title, dateStr, timeStr, id)
+ * или объект { kind, id, title, date, time }.
  * Дедуп через state.sentReminderIds.
  */
-async function scheduleNtfyReminder({ kind, id, title, date, time }) {
+async function scheduleNtfyReminder(titleOrOpts, dateStr, timeStr, id) {
+  let kind = "task";
+  let title;
+  let date;
+  let time;
+  let itemId;
+  if (titleOrOpts && typeof titleOrOpts === "object" && !Array.isArray(titleOrOpts)) {
+    kind = titleOrOpts.kind || "task";
+    title = titleOrOpts.title;
+    date = titleOrOpts.date;
+    time = titleOrOpts.time;
+    itemId = titleOrOpts.id;
+  } else {
+    title = titleOrOpts;
+    date = dateStr;
+    time = timeStr;
+    itemId = id;
+  }
+
   if (!date || !time) return { ok: false, reason: "no-time" };
   const tm = normalizeTimeHHMM(time);
   if (!tm) return { ok: false, reason: "bad-time" };
   const topic = getNtfyTopic();
   if (!topic) return { ok: false, reason: "no-topic" };
 
-  const key = reminderKey(kind, id, date, tm);
+  const key = reminderKey(kind, itemId || "x", date, tm);
   if (!state.sentReminderIds) state.sentReminderIds = [];
   if (state.sentReminderIds.includes(key)) return { ok: true, reason: "already" };
 
   const at = shanghaiIso(date, tm);
   const atMs = Date.parse(at);
-  if (!Number.isFinite(atMs) || atMs <= Date.now() - 30_000) {
+  // Минимум +1 минута от текущего момента (Asia/Shanghai ISO+08:00)
+  if (!Number.isFinite(atMs) || atMs < Date.now() + 60_000) {
     return { ok: false, reason: "past" };
   }
 
@@ -285,12 +316,41 @@ async function scheduleNtfyReminder({ kind, id, title, date, time }) {
       return { ok: false, reason: `http-${res.status}` };
     }
     state.sentReminderIds.push(key);
-    // trim old ids
     if (state.sentReminderIds.length > 400) {
       state.sentReminderIds = state.sentReminderIds.slice(-300);
     }
     await persistLocal();
     return { ok: true, reason: "scheduled", at };
+  } catch (e) {
+    console.error(e);
+    return { ok: false, reason: e.message || "network" };
+  }
+}
+
+/** Мгновенный тестовый пуш на iPhone — проверка канала ntfy. */
+async function sendNtfyTestPush() {
+  const topic = getNtfyTopic();
+  if (!topic) return { ok: false, reason: "no-topic" };
+  const body = "✅ Тест: Command Center подключён. Точные пуши HH:MM идут прямо с iPhone.";
+  try {
+    const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+      method: "POST",
+      headers: {
+        Title: "Command Center",
+        Priority: "default",
+        Tags: "white_check_mark",
+        Click: NTFY_CLICK,
+        Actions: `view, Open App, ${NTFY_CLICK}`,
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+      body,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      console.error("ntfy test failed", res.status, text);
+      return { ok: false, reason: `http-${res.status}` };
+    }
+    return { ok: true, reason: "sent" };
   } catch (e) {
     console.error(e);
     return { ok: false, reason: e.message || "network" };
@@ -445,6 +505,19 @@ function ensureDefaults() {
   if (!state.tasks) state.tasks = [];
   if (!Array.isArray(state.calendarEvents)) state.calendarEvents = [];
   if (!Array.isArray(state.sentReminderIds)) state.sentReminderIds = [];
+  // ntfyTopic: локально + в зашифрованном state.json
+  if (state.ntfyTopic == null) state.ntfyTopic = "";
+  else state.ntfyTopic = String(state.ntfyTopic).trim();
+  try {
+    const lsTopic = (localStorage.getItem(LS_NTFY) || "").trim();
+    if (state.ntfyTopic) {
+      if (lsTopic !== state.ntfyTopic) localStorage.setItem(LS_NTFY, state.ntfyTopic);
+    } else if (lsTopic) {
+      state.ntfyTopic = lsTopic;
+    }
+  } catch {
+    /* ignore */
+  }
   if (!state.weeklySchedule || typeof state.weeklySchedule !== "object") {
     state.weeklySchedule = emptyWeeklySchedule();
   } else {
@@ -816,6 +889,7 @@ window.CC = {
   normalizeTimeHHMM,
   emptyWeeklySchedule,
   scheduleNtfyReminder,
+  sendNtfyTestPush,
   getState,
   loadVaultMeta,
   unlockWithPassword,

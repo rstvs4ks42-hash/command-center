@@ -337,6 +337,13 @@
           <div class="field">
             <label>ntfy topic (для точных напоминаний HH:MM)</label>
             <input id="ntfy-topic" placeholder="ваш-секретный-топик" autocomplete="off">
+            <p class="muted" style="margin:6px 0 0;font-size:12px;line-height:1.45">
+              Сохраняется локально и в зашифрованный <code>state.json</code>.
+              iPhone шлёт отложенные пуши напрямую в ntfy — без ожидания GitHub Actions.
+            </p>
+          </div>
+          <div class="btn-row" style="margin-top:4px">
+            <button type="button" class="btn" id="btn-ntfy-test">🔔 Проверить пуш прямо сейчас</button>
           </div>
           <div class="btn-row">
             <button class="btn btn-primary" id="btn-save-gh">Сохранить в браузере</button>

@@ -239,15 +239,26 @@ def weekday_key(day: date) -> str:
     return WEEKDAY_KEYS[day.weekday()]
 
 
+def _as_list(val: Any) -> List[Any]:
+    return val if isinstance(val, list) else []
+
+
+def _as_dict(val: Any) -> Dict[str, Any]:
+    return val if isinstance(val, dict) else {}
+
+
 def collect_timed_items_for_day(state: Dict[str, Any], day: date) -> List[Dict[str, str]]:
     """Задачи дня (dailyTasks или weeklySchedule) + привычки с HH:MM."""
     key = day.isoformat()
     items: List[Dict[str, str]] = []
 
+    daily_raw = _as_list(state.get("dailyTasks"))
     daily = [
         t
-        for t in (state.get("dailyTasks") or [])
-        if (t.get("date") or "")[:10] == key and not t.get("done")
+        for t in daily_raw
+        if isinstance(t, dict)
+        and (t.get("date") or "")[:10] == key
+        and not t.get("done")
     ]
     if daily:
         for t in daily:
@@ -264,7 +275,10 @@ def collect_timed_items_for_day(state: Dict[str, Any], day: date) -> List[Dict[s
             )
     else:
         wd = weekday_key(day)
-        for t in (state.get("weeklySchedule") or {}).get(wd) or []:
+        schedule = _as_dict(state.get("weeklySchedule"))
+        for t in _as_list(schedule.get(wd)):
+            if not isinstance(t, dict):
+                continue
             tm = normalize_time_hhmm(t.get("time"))
             if not tm:
                 continue
@@ -277,8 +291,10 @@ def collect_timed_items_for_day(state: Dict[str, Any], day: date) -> List[Dict[s
                 }
             )
 
-    logs = (state.get("habitLogs") or {}).get(key) or {}
-    for h in state.get("habits") or []:
+    logs = _as_dict(_as_dict(state.get("habitLogs")).get(key))
+    for h in _as_list(state.get("habits")):
+        if not isinstance(h, dict):
+            continue
         if h.get("archived"):
             continue
         if logs.get(h.get("id")):
@@ -323,7 +339,8 @@ def schedule_day_reminders(state: Dict[str, Any]) -> int:
             continue
         at = shanghai_iso(date_str, item["time"])
         at_dt = datetime.fromisoformat(at)
-        if at_dt <= now - timedelta(seconds=30):
+        # Минимум +1 минута от текущего времени Asia/Shanghai
+        if at_dt < now + timedelta(minutes=1):
             print(f"skip past: {key}", file=sys.stderr)
             continue
         body = f"⏰ Пора ({item['time']}): {item['title']}"
@@ -423,9 +440,11 @@ def stage_label(stage: str) -> str:
 
 def habits_status(state: Dict[str, Any], today: date) -> List[tuple]:
     key = today.isoformat()
-    logs = (state.get("habitLogs") or {}).get(key) or {}
+    logs = _as_dict(_as_dict(state.get("habitLogs")).get(key))
     rows = []
-    for h in state.get("habits") or []:
+    for h in _as_list(state.get("habits")):
+        if not isinstance(h, dict):
+            continue
         if h.get("archived"):
             continue
         done = bool(logs.get(h.get("id")))
@@ -452,9 +471,20 @@ def subscription_warnings(state: Dict[str, Any], today: date, threshold: int = 3
 
 
 def tasks_today(state: Dict[str, Any], today: date) -> List[Dict[str, Any]]:
+    """Задачи на сегодня: dailyTasks (основной источник) или legacy tasks."""
     key = today.isoformat()
-    out = []
-    for t in state.get("tasks") or []:
+    out: List[Dict[str, Any]] = []
+    daily = _as_list(state.get("dailyTasks"))
+    if daily:
+        for t in daily:
+            if not isinstance(t, dict):
+                continue
+            if (t.get("date") or "")[:10] == key:
+                out.append(t)
+        return out
+    for t in _as_list(state.get("tasks")):
+        if not isinstance(t, dict):
+            continue
         if t.get("date") == key or (not t.get("done") and not t.get("date")):
             out.append(t)
     return out
@@ -503,8 +533,11 @@ def calendar_blocks(state: Dict[str, Any], today: date) -> List[str]:
 def timed_tasks_block(state: Dict[str, Any], today: date) -> List[str]:
     """Задачи dailyTasks (или weeklySchedule) с точным временем — в утренний брифинг."""
     key = today.isoformat()
-    tasks = []
-    for t in state.get("dailyTasks") or state.get("tasks") or []:
+    tasks: List[Dict[str, Any]] = []
+    source = _as_list(state.get("dailyTasks")) or _as_list(state.get("tasks"))
+    for t in source:
+        if not isinstance(t, dict):
+            continue
         if t.get("done"):
             continue
         if (t.get("date") or "")[:10] != key:
@@ -515,7 +548,10 @@ def timed_tasks_block(state: Dict[str, Any], today: date) -> List[str]:
         tasks.append({"time": tm, "title": t.get("title") or "Задача", "priority": t.get("priority")})
     if not tasks:
         wd = weekday_key(today)
-        for t in (state.get("weeklySchedule") or {}).get(wd) or []:
+        schedule = _as_dict(state.get("weeklySchedule"))
+        for t in _as_list(schedule.get(wd)):
+            if not isinstance(t, dict):
+                continue
             tm = normalize_time_hhmm(t.get("time"))
             if not tm:
                 continue
@@ -527,8 +563,10 @@ def timed_tasks_block(state: Dict[str, Any], today: date) -> List[str]:
                 }
             )
     # привычки с временем (ещё не отмеченные)
-    logs = (state.get("habitLogs") or {}).get(key) or {}
-    for h in state.get("habits") or []:
+    logs = _as_dict(_as_dict(state.get("habitLogs")).get(key))
+    for h in _as_list(state.get("habits")):
+        if not isinstance(h, dict):
+            continue
         if h.get("archived") or logs.get(h.get("id")):
             continue
         tm = normalize_time_hhmm(h.get("time"))
