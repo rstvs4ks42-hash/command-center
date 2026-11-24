@@ -123,17 +123,18 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
     return (d - today).days
 
 
-def _telegram_opener() -> urllib.request.OpenerDirector:
-    proxy = os.environ.get("TG_PROXY_URL", "").strip()
-    handlers: list[Any] = []
+def telegram_api_base() -> str:
+    """База Bot API: TG_PROXY_URL (без слэша в конце) или https://api.telegram.org."""
+    proxy = os.environ.get("TG_PROXY_URL", "").strip().rstrip("/")
     if proxy:
-        print(f"Telegram: используем TG_PROXY_URL={proxy}", file=sys.stderr)
-        handlers.append(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        )
-    else:
-        print("Telegram: прямое соединение с api.telegram.org (без TG_PROXY_URL)", file=sys.stderr)
-    return urllib.request.build_opener(*handlers)
+        print(f"Telegram: база API = TG_PROXY_URL ({proxy})", file=sys.stderr)
+        return proxy
+    print("Telegram: база API = https://api.telegram.org", file=sys.stderr)
+    return "https://api.telegram.org"
+
+
+def _telegram_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener()
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -193,10 +194,11 @@ def _urllib_request(
 
 
 def send_telegram(text: str) -> None:
-    """POST через urllib (+ опциональный TG_PROXY_URL); при 429/timeout — GET fallback."""
+    """POST через urllib; база = TG_PROXY_URL или api.telegram.org; при 429/timeout — GET fallback."""
     token, chat_id = require_telegram_secrets()
     opener = _telegram_opener()
-    post_url = f"https://api.telegram.org/bot{token}/sendMessage"
+    api_base = telegram_api_base()
+    post_url = f"{api_base}/bot{token}/sendMessage"
     payload = json.dumps(
         {
             "chat_id": chat_id,
@@ -214,7 +216,7 @@ def send_telegram(text: str) -> None:
         try:
             print(
                 f"Telegram POST attempt {attempt}/{TELEGRAM_POST_ATTEMPTS} "
-                f"(urllib/IPv4, timeout={TELEGRAM_TIMEOUT}s)",
+                f"(urllib/IPv4, timeout={TELEGRAM_TIMEOUT}s) → {api_base}",
                 file=sys.stderr,
             )
             status, body = _urllib_request(
@@ -266,9 +268,9 @@ def send_telegram(text: str) -> None:
         },
         encoding="utf-8",
     )
-    get_url = f"https://api.telegram.org/bot{token}/sendMessage?{query}"
+    get_url = f"{api_base}/bot{token}/sendMessage?{query}"
     print(
-        f"Telegram GET fallback (timeout={TELEGRAM_GET_FALLBACK_TIMEOUT}s) после 429/timeout",
+        f"Telegram GET fallback (timeout={TELEGRAM_GET_FALLBACK_TIMEOUT}s) → {api_base}",
         file=sys.stderr,
     )
     try:

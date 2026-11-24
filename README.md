@@ -99,7 +99,7 @@ PIN на время вкладки лежит в `sessionStorage` (после з
    - Имя: `BOT_TOKEN` → значение токена от BotFather.
    - Имя: `CHAT_ID` → ваш chat id.
    - Имя: `APP_PASSWORD` → **тот же PIN/пароль**, что вы задали в приложении.
-   - (Опционально) `TG_PROXY_URL` → HTTP(S)-прокси до Telegram, если с IP GitHub Actions ловите `429` / timeout.
+   - (Опционально) `TG_PROXY_URL` → базовый URL вместо `https://api.telegram.org` (без `/` в конце), если с IP Actions ловите `429` / timeout.
 3. Actions должен быть включён: **Settings** → **Actions** → **General** → Allow actions.
 
 > Если смените PIN в настройках приложения — сразу обновите секрет `APP_PASSWORD`, иначе бот перестанет читать данные.  

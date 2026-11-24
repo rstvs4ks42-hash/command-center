@@ -52,6 +52,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          # Опционально: HTTP(S)-прокси до api.telegram.org (обход 429/таймаутов на IP Actions)
+          # Опционально: замена базы API (без / в конце), напр. https://tg-proxy.example.com
+          # Если задан — вместо https://api.telegram.org используется TG_PROXY_URL
           TG_PROXY_URL: ${{ secrets.TG_PROXY_URL }}
         run: python bot/notify.py --mode "${{ steps.mode.outputs.value }}"
