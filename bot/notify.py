@@ -131,13 +131,14 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
 
 
 def send_ntfy(text: str) -> None:
-    """POST https://ntfy.sh/{NTFY_TOPIC} с заголовками Title/Priority/Tags/Click."""
+    """POST https://ntfy.sh/{NTFY_TOPIC} с Click/Actions на сайт Command Center."""
     topic = require_ntfy_topic()
     url = f"{NTFY_BASE}/{topic}"
     url_safe = f"{NTFY_BASE}/***"
     print(f"ntfy endpoint: {NTFY_BASE}/{{NTFY_TOPIC}}", file=sys.stderr)
 
-    body = text.encode("utf-8")
+    message = text.rstrip() + f"\n\n🔗 Открыть трекер: {NTFY_CLICK}"
+    body = message.encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
@@ -148,6 +149,7 @@ def send_ntfy(text: str) -> None:
             "Priority": "default",
             "Tags": "rocket",
             "Click": NTFY_CLICK,
+            "Actions": f"view, Открыть Command Center, {NTFY_CLICK}",
             "Content-Type": "text/plain; charset=utf-8",
         },
     )
