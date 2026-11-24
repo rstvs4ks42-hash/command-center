@@ -41,6 +41,7 @@
   let selectedCalDay = null;
   let editingVideoId = null;
   let editingEventId = null;
+  let editingSubId = null;
 
   const EVENT_COLORS = [
     { id: "blue", label: "Синий", hex: "#5b8cff" },
@@ -109,28 +110,35 @@
   function renderYoutube() {
     const s = getState();
     const m = s.monetization;
-    const subPct = Math.min(100, (m.subscribers / m.subscribersGoal) * 100);
-    const hoursPct = Math.min(100, (m.watchHours / m.watchHoursGoal) * 100);
-    const subLeft = Math.max(0, m.subscribersGoal - m.subscribers);
-    const hoursLeft = Math.max(0, m.watchHoursGoal - m.watchHours);
+    const subGoal = m.subscribersGoal || 1000;
+    const hoursGoal = m.watchHoursGoal || 4000;
+    const subPct = Math.min(100, (m.subscribers / subGoal) * 100);
+    const hoursPct = Math.min(100, (m.watchHours / hoursGoal) * 100);
+    const subLeft = Math.max(0, subGoal - m.subscribers);
+    const hoursLeft = Math.max(0, hoursGoal - m.watchHours);
+
+    const monoChip = $("#panel-youtube .block-head .chip");
+    if (monoChip) {
+      monoChip.textContent = `${subGoal.toLocaleString("ru-RU")} / ${hoursGoal.toLocaleString("ru-RU")}`;
+    }
 
     $("#thermo").innerHTML = `
       <div class="thermo">
         <div class="thermo-row">
           <div class="thermo-meta">
             <span>Подписчики</span>
-            <strong>${m.subscribers.toLocaleString("ru-RU")} / ${m.subscribersGoal.toLocaleString("ru-RU")}</strong>
+            <strong>${m.subscribers.toLocaleString("ru-RU")} / ${subGoal.toLocaleString("ru-RU")}</strong>
           </div>
           <div class="bar"><i style="width:${subPct}%"></i></div>
-          <div class="muted">Осталось ${subLeft.toLocaleString("ru-RU")} до цели 1 000</div>
+          <div class="muted">Осталось ${subLeft.toLocaleString("ru-RU")} до цели ${subGoal.toLocaleString("ru-RU")}</div>
         </div>
         <div class="thermo-row">
           <div class="thermo-meta">
             <span>Часы просмотра</span>
-            <strong>${m.watchHours.toLocaleString("ru-RU")} / ${m.watchHoursGoal.toLocaleString("ru-RU")}</strong>
+            <strong>${m.watchHours.toLocaleString("ru-RU")} / ${hoursGoal.toLocaleString("ru-RU")}</strong>
           </div>
           <div class="bar"><i style="width:${hoursPct}%"></i></div>
-          <div class="muted">Осталось ${hoursLeft.toLocaleString("ru-RU")} ч до цели 4 000</div>
+          <div class="muted">Осталось ${hoursLeft.toLocaleString("ru-RU")} ч до цели ${hoursGoal.toLocaleString("ru-RU")}</div>
         </div>
         <div class="inline-fields">
           <div class="field">
@@ -138,8 +146,18 @@
             <input type="number" id="inp-subs" min="0" value="${m.subscribers}">
           </div>
           <div class="field">
+            <label>Цель подписчиков</label>
+            <input type="number" id="inp-subs-goal" min="1" value="${subGoal}">
+          </div>
+        </div>
+        <div class="inline-fields">
+          <div class="field">
             <label>Часы просмотра</label>
             <input type="number" id="inp-hours" min="0" step="0.1" value="${m.watchHours}">
+          </div>
+          <div class="field">
+            <label>Цель часов</label>
+            <input type="number" id="inp-hours-goal" min="1" step="0.1" value="${hoursGoal}">
           </div>
         </div>
         <div class="btn-row">
@@ -152,6 +170,8 @@
       updateState((st) => {
         st.monetization.subscribers = Number($("#inp-subs").value) || 0;
         st.monetization.watchHours = Number($("#inp-hours").value) || 0;
+        st.monetization.subscribersGoal = Math.max(1, Number($("#inp-subs-goal").value) || 1000);
+        st.monetization.watchHoursGoal = Math.max(1, Number($("#inp-hours-goal").value) || 4000);
       });
       toast("Прогресс монетизации сохранён");
     };
@@ -428,6 +448,121 @@
     $("#modal").classList.remove("open");
     editingVideoId = null;
     editingEventId = null;
+    editingSubId = null;
+  }
+
+  function defaultLaunchFund(rate = 7.2) {
+    const goalCny = 265;
+    return {
+      title: "Копилка на запуск ИИ-конвейера",
+      savedCny: 0,
+      goalCny,
+      goalUsd: Math.round((goalCny / rate) * 10) / 10,
+    };
+  }
+
+  function openFundEditModal() {
+    const s = getState();
+    const rate = s.budget?.exchangeRate || 7.2;
+    const fund = s.launchFund || defaultLaunchFund(rate);
+    const goalCny = fund.goalCny || 265;
+    const goalUsd = Math.round((goalCny / rate) * 10) / 10;
+    $("#modal-title").textContent = "Редактировать копилку";
+    $("#modal-body").innerHTML = `
+      <div class="form-grid">
+        <div class="field">
+          <label>Название цели</label>
+          <input id="fund-title" value="${esc(fund.title || "Копилка на запуск ИИ-конвейера")}" placeholder="Название цели">
+        </div>
+        <div class="field">
+          <label>Целевая сумма ¥</label>
+          <input type="number" id="fund-goal-cny" min="1" step="1" value="${goalCny}">
+        </div>
+        <div class="muted" id="fund-goal-usd-hint">≈ $${goalUsd} по курсу ${rate}</div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="fund-goal-save">Сохранить</button>
+          <button class="btn btn-ghost" id="fund-goal-cancel">Отмена</button>
+        </div>
+      </div>
+    `;
+    $("#modal").classList.add("open");
+    const syncUsdHint = () => {
+      const cny = Math.max(1, Number($("#fund-goal-cny").value) || 0);
+      const usd = Math.round((cny / rate) * 10) / 10;
+      $("#fund-goal-usd-hint").textContent = `≈ $${usd} по курсу ${rate}`;
+    };
+    $("#fund-goal-cny").oninput = syncUsdHint;
+    $("#fund-goal-cancel").onclick = closeModal;
+    $("#fund-goal-save").onclick = () => {
+      const title = $("#fund-title").value.trim() || "Копилка";
+      const nextGoal = Math.max(1, Number($("#fund-goal-cny").value) || 265);
+      updateState((st) => {
+        const r = st.budget?.exchangeRate || 7.2;
+        if (!st.launchFund) st.launchFund = defaultLaunchFund(r);
+        st.launchFund.title = title;
+        st.launchFund.goalCny = nextGoal;
+        st.launchFund.goalUsd = Math.round((nextGoal / r) * 10) / 10;
+      });
+      closeModal();
+      toast("Цель копилки обновлена");
+    };
+  }
+
+  function openSubEditModal(id) {
+    const s = getState();
+    const sub = s.subscriptions.find((x) => x.id === id);
+    if (!sub) return;
+    editingSubId = id;
+    $("#modal-title").textContent = "Изменить подписку";
+    $("#modal-body").innerHTML = `
+      <div class="form-grid">
+        <div class="field">
+          <label>Сервис</label>
+          <input id="sub-edit-name" value="${esc(sub.name || "")}" placeholder="Название сервиса">
+        </div>
+        <div class="inline-fields">
+          <div class="field">
+            <label>Цена</label>
+            <input type="number" id="sub-edit-price" min="0" step="0.01" value="${sub.price ?? 0}">
+          </div>
+          <div class="field">
+            <label>Валюта</label>
+            <select id="sub-edit-cur">
+              <option value="USD" ${sub.currency === "USD" ? "selected" : ""}>$ USD</option>
+              <option value="CNY" ${sub.currency === "CNY" ? "selected" : ""}>¥ CNY</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Дата продления</label>
+          <input type="date" id="sub-edit-date" value="${sub.renewDate || ""}">
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="sub-edit-save">Сохранить</button>
+          <button class="btn btn-ghost" id="sub-edit-cancel">Отмена</button>
+        </div>
+      </div>
+    `;
+    $("#modal").classList.add("open");
+    $("#sub-edit-cancel").onclick = closeModal;
+    $("#sub-edit-save").onclick = () => {
+      const name = $("#sub-edit-name").value.trim();
+      if (!name) return toast("Укажите название");
+      const price = Number($("#sub-edit-price").value) || 0;
+      const currency = $("#sub-edit-cur").value;
+      const renewDate = $("#sub-edit-date").value || "";
+      updateState((st) => {
+        const cur = st.subscriptions.find((x) => x.id === editingSubId);
+        if (!cur) return;
+        cur.name = name;
+        cur.price = price;
+        cur.currency = currency;
+        cur.renewDate = renewDate;
+        cur.critical = /ip|proxy|iproyal/i.test(name);
+      });
+      closeModal();
+      toast("Подписка обновлена");
+    };
   }
 
   /* Calendar */
@@ -1035,44 +1170,80 @@
     `;
     $("#fx-rate").onchange = () => {
       updateState((st) => {
-        st.budget.exchangeRate = Number($("#fx-rate").value) || 7.2;
+        const rateNext = Number($("#fx-rate").value) || 7.2;
+        st.budget.exchangeRate = rateNext;
+        if (st.launchFund?.goalCny) {
+          st.launchFund.goalUsd = Math.round((st.launchFund.goalCny / rateNext) * 10) / 10;
+        }
       });
     };
 
-    const fund = s.launchFund || { savedCny: 0, goalCny: 320, goalUsd: 45 };
-    const goalCny = fund.goalCny || 320;
+    const fund = s.launchFund || defaultLaunchFund(rate);
+    const goalCny = fund.goalCny || 265;
     const saved = fund.savedCny || 0;
     const left = Math.max(0, goalCny - saved);
-    const fundPct = Math.min(100, (saved / goalCny) * 100);
-    const goalUsdApprox = fund.goalUsd || Math.round((goalCny / rate) * 10) / 10;
+    const fundPct = Math.min(100, goalCny > 0 ? (saved / goalCny) * 100 : 0);
+    const goalUsdApprox = Math.round((goalCny / rate) * 10) / 10;
+    const savedUsdApprox = Math.round((saved / rate) * 10) / 10;
+    const fundTitle = fund.title || "Копилка на запуск ИИ-конвейера";
     $("#launch-fund-block").innerHTML = `
-      <div class="block-head"><h3>🎯 Копилка на запуск ИИ-конвейера</h3>
-        <span class="chip">цель ¥${goalCny} / $${goalUsdApprox}</span>
+      <div class="block-head">
+        <h3>🎯 ${esc(fundTitle)}</h3>
+        <div class="btn-row" style="gap:8px;flex-wrap:wrap">
+          <span class="chip">цель ¥${goalCny} / ~$${goalUsdApprox}</span>
+          <button type="button" class="btn btn-sm" id="btn-fund-edit">Изменить</button>
+        </div>
       </div>
       <div class="thermo-row">
         <div class="thermo-meta"><span>Накоплено</span><strong>¥${saved.toFixed(0)} / ¥${goalCny}</strong></div>
         <div class="bar"><i style="width:${fundPct}%"></i></div>
-        <div class="muted">Осталось ¥${left.toFixed(0)} (Claude Pro + Static IP + 即梦AI)</div>
+        <div class="muted">≈ $${savedUsdApprox} · осталось ¥${left.toFixed(0)}</div>
       </div>
       <div class="btn-row" style="margin-top:10px">
-        <div class="field" style="flex:1"><input type="number" id="fund-add" min="0" step="1" placeholder="¥ добавить"></div>
-        <button type="button" class="btn btn-primary btn-sm" id="btn-fund-add">В копилку</button>
+        <div class="field" style="flex:1"><input type="number" id="fund-amount" step="1" placeholder="¥ сумма"></div>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-fund-add">+ В копилку</button>
+        <button type="button" class="btn btn-sm" id="btn-fund-set">Задать</button>
+        <button type="button" class="btn btn-sm" id="btn-fund-sub">− Расход</button>
         <button type="button" class="btn btn-sm" id="btn-fund-reset">Сброс</button>
       </div>`;
+    const ensureFund = (st) => {
+      if (!st.launchFund) st.launchFund = defaultLaunchFund(st.budget?.exchangeRate || 7.2);
+      return st.launchFund;
+    };
+    $("#btn-fund-edit").onclick = () => openFundEditModal();
     $("#btn-fund-add").onclick = () => {
-      const add = Number($("#fund-add").value) || 0;
-      if (add <= 0) return;
+      const add = Number($("#fund-amount").value) || 0;
+      if (add <= 0) return toast("Укажите сумму > 0");
       updateState((st) => {
-        if (!st.launchFund) st.launchFund = { savedCny: 0, goalCny: 320, goalUsd: 45 };
-        st.launchFund.savedCny = (st.launchFund.savedCny || 0) + add;
+        const f = ensureFund(st);
+        f.savedCny = (f.savedCny || 0) + add;
       });
       toast("Добавлено в копилку");
     };
-    $("#btn-fund-reset").onclick = () => {
+    $("#btn-fund-set").onclick = () => {
+      const raw = $("#fund-amount").value;
+      if (raw === "" || raw == null) return toast("Укажите точную сумму");
+      const next = Math.max(0, Number(raw) || 0);
       updateState((st) => {
-        if (!st.launchFund) st.launchFund = { savedCny: 0, goalCny: 320, goalUsd: 45 };
-        st.launchFund.savedCny = 0;
+        ensureFund(st).savedCny = next;
       });
+      toast("Накоплено обновлено");
+    };
+    $("#btn-fund-sub").onclick = () => {
+      const sub = Number($("#fund-amount").value) || 0;
+      if (sub <= 0) return toast("Укажите сумму расхода > 0");
+      updateState((st) => {
+        const f = ensureFund(st);
+        f.savedCny = Math.max(0, (f.savedCny || 0) - sub);
+      });
+      toast("Расход списан из копилки");
+    };
+    $("#btn-fund-reset").onclick = () => {
+      if (!confirm("Обнулить накопленную сумму?")) return;
+      updateState((st) => {
+        ensureFund(st).savedCny = 0;
+      });
+      toast("Копилка обнулена");
     };
 
     const catLabel = (id) => BUDGET_CATEGORIES.find((c) => c.id === id)?.label || id || "";
@@ -1128,7 +1299,7 @@
             <div style="font-weight:650">${esc(sub.name)}</div>
             <div class="muted">${formatMoney(sub.price, sub.currency)} · до ${sub.renewDate || "—"}</div>
             <div class="btn-row" style="margin-top:8px">
-              <button class="btn btn-sm" data-edit-sub="${sub.id}">Дата</button>
+              <button class="btn btn-sm" data-edit-sub="${sub.id}">Изменить</button>
               <button class="btn btn-sm btn-ghost" data-del-sub="${sub.id}">✕</button>
             </div>
           </div>
@@ -1203,17 +1374,13 @@
       const del = e.target.closest("[data-del-sub]");
       const edit = e.target.closest("[data-edit-sub]");
       if (del) {
+        if (!confirm("Удалить подписку?")) return;
         updateState((st) => {
           st.subscriptions = st.subscriptions.filter((x) => x.id !== del.dataset.delSub);
         });
       }
       if (edit) {
-        const next = prompt("Новая дата продления (YYYY-MM-DD):");
-        if (!next) return;
-        updateState((st) => {
-          const sub = st.subscriptions.find((x) => x.id === edit.dataset.editSub);
-          if (sub) sub.renewDate = next;
-        });
+        openSubEditModal(edit.dataset.editSub);
       }
     });
 

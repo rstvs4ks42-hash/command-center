@@ -56,14 +56,19 @@ const DEFAULT_STATE = {
   dailyTasks: [],
   calendarEvents: [],
   sentReminderIds: [],
-  launchFund: { savedCny: 0, goalCny: 320, goalUsd: 45 },
+  launchFund: {
+    title: "Копилка на запуск ИИ-конвейера",
+    savedCny: 0,
+    goalCny: 265,
+    goalUsd: 37,
+  },
   budget: { exchangeRate: 7.2, expenses: [], income: [] },
   subscriptions: [
     {
       id: "sub-001",
       name: "Static IP США (IPRoyal)",
       renewDate: "",
-      price: 15,
+      price: 5.4,
       currency: "USD",
       critical: true,
     },
@@ -79,7 +84,7 @@ const DEFAULT_STATE = {
       id: "sub-003",
       name: "即梦AI",
       renewDate: "",
-      price: 99,
+      price: 79,
       currency: "CNY",
       critical: false,
     },
@@ -382,11 +387,43 @@ function ensureDefaults() {
   if (!state.tasks) state.tasks = [];
   if (!Array.isArray(state.calendarEvents)) state.calendarEvents = [];
   if (!Array.isArray(state.sentReminderIds)) state.sentReminderIds = [];
-  if (!state.launchFund) state.launchFund = { savedCny: 0, goalCny: 320, goalUsd: 45 };
+  if (!state.launchFund) {
+    state.launchFund = JSON.parse(JSON.stringify(DEFAULT_STATE.launchFund));
+  } else {
+    const fund = state.launchFund;
+    if (!fund.title) fund.title = DEFAULT_STATE.launchFund.title;
+    // Старый дефолт ¥320 / $45 → актуальный ¥265 / ~$37
+    if (fund.goalCny === 320 && (fund.goalUsd === 45 || fund.goalUsd == null)) {
+      fund.goalCny = 265;
+      fund.goalUsd = 37;
+    }
+    if (fund.goalUsd == null && fund.goalCny) {
+      const rate = state.budget?.exchangeRate || 7.2;
+      fund.goalUsd = Math.round((fund.goalCny / rate) * 10) / 10;
+    }
+  }
   if (!state.prompts) state.prompts = JSON.parse(JSON.stringify(DEFAULT_STATE.prompts));
-  if (!state.subscriptions) state.subscriptions = [];
+  if (!state.subscriptions) {
+    state.subscriptions = JSON.parse(JSON.stringify(DEFAULT_STATE.subscriptions));
+  } else if (Array.isArray(state.subscriptions)) {
+    // Обновить устаревшие стартовые цены стандартных подписок
+    const priceFixes = {
+      "sub-001": { old: 15, next: 5.4, name: /iproyal|static\s*ip/i },
+      "sub-003": { old: 99, next: 79, name: /即梦|jimeng/i },
+    };
+    state.subscriptions.forEach((sub) => {
+      const fix = priceFixes[sub.id];
+      if (!fix) return;
+      if (Number(sub.price) === fix.old && fix.name.test(sub.name || "")) {
+        sub.price = fix.next;
+      }
+    });
+  }
   if (!state.monetization) {
     state.monetization = JSON.parse(JSON.stringify(DEFAULT_STATE.monetization));
+  } else {
+    if (state.monetization.subscribersGoal == null) state.monetization.subscribersGoal = 1000;
+    if (state.monetization.watchHoursGoal == null) state.monetization.watchHoursGoal = 4000;
   }
   // migrate tasks → dailyTasks
   if (!Array.isArray(state.dailyTasks)) {
