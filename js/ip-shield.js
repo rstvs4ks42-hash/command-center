@@ -1,22 +1,36 @@
 /**
- * IP-Щит — 7-уровневый сканер чистоты соединения.
+ * IP-Щит — 6-уровневый сканер чистоты соединения.
+ * Без ложных тревог на Static Residential / ISP (Soanalytics и др.).
  * Автономный модуль: не меняет state.js / notify.py / логику других вкладок.
  */
 (() => {
   const BLOCKED = new Set(["CN", "HK", "MO", "RU", "BY", "IR", "KP"]);
-  const DC_KEYS = [
-    "amazon", "aws", "google", "digitalocean", "vultr", "ovh", "hetzner", "linode",
-    "akamai", "microsoft", "azure", "alibaba", "tencent", "oracle", "cloudflare",
-    "m247", "leaseweb", "datacamp", "choopa", "contabo", "scaleway", "hostinger",
-    "gcore", "zenlayer", "hosting", "datacenter", "data center", "vps", "cloud",
-  ];
-  const RES_KEYS = [
-    "at&t", "att", "comcast", "verizon", "charter", "spectrum", "cox", "frontier",
-    "centurylink", "t-mobile", "tmobile", "altice", "optimum", "residential",
-    "isp", "telecom", "broadband", "cable", "fiber",
+
+  /** Только явные облачные хостинги — штрафуем. ISP / Soanalytics / региональные — чистые. */
+  const HOSTING_RE = [
+    /\bdigitalocean\b/i,
+    /\bvultr\b/i,
+    /\bhetzner\b/i,
+    /\bovh\b/i,
+    /\blinode\b/i,
+    /\bamazon\s*aws\b/i,
+    /\bamazonaws\b/i,
+    /\baws\b/i,
+    /\bgoogle\s*cloud\b/i,
+    /\bgcp\b/i,
+    /\bmicrosoft\s*azure\b/i,
+    /\bazure\b/i,
+    /\balibaba\s*cloud\b/i,
+    /\balibaba\b/i,
+    /\btencent\s*cloud\b/i,
+    /\btencent\b/i,
+    /\bcontabo\b/i,
+    /\bm247\b/i,
+    /\bchoopa\b/i,
   ];
 
   const TIMEOUT_MS = 5000;
+  const WEBRTC_MS = 2500;
   let running = false;
 
   function esc(s) {
@@ -30,8 +44,9 @@
   function fetchTimeout(url, ms = TIMEOUT_MS, opts = {}) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), ms);
-    return fetch(url, { ...opts, signal: ctrl.signal, cache: "no-store" })
-      .finally(() => clearTimeout(t));
+    return fetch(url, { ...opts, signal: ctrl.signal, cache: "no-store" }).finally(() =>
+      clearTimeout(t)
+    );
   }
 
   async function getJson(url) {
@@ -65,6 +80,19 @@
     return String(cc || "").trim().toUpperCase();
   }
 
+  function formatAsn(v) {
+    if (v == null || v === "") return "";
+    const s = String(v).trim();
+    if (/^as\d+/i.test(s)) return s.toUpperCase();
+    if (/^\d+$/.test(s)) return `AS${s}`;
+    return s;
+  }
+
+  function isHostingBlob(blob) {
+    const b = String(blob || "");
+    return HOSTING_RE.some((re) => re.test(b));
+  }
+
   async function quorumCheck() {
     const sources = [];
     const tasks = [
@@ -75,12 +103,11 @@
             name: "ipwho.is",
             ip: normalizeIp(d.ip),
             country: normalizeCc(d.country_code),
-            asn: d.connection?.asn ? `AS${d.connection.asn}` : "",
+            asn: formatAsn(d.connection?.asn),
             isp: d.connection?.isp || d.connection?.org || "",
             org: d.connection?.org || "",
-            utc_offset: d.timezone?.utc || d.timezone?.offset || "",
+            city: d.city || "",
             timezone: d.timezone?.id || "",
-            raw: d,
             ok: !!d.ip,
           });
         } catch (e) {
@@ -94,12 +121,11 @@
             name: "ipapi.co",
             ip: normalizeIp(d.ip),
             country: normalizeCc(d.country_code || d.country),
-            asn: d.asn || "",
+            asn: formatAsn(d.asn),
             isp: d.org || d.org_name || "",
             org: d.org || "",
-            utc_offset: d.utc_offset || "",
+            city: d.city || "",
             timezone: d.timezone || "",
-            raw: d,
             ok: !!d.ip && !d.error,
           });
         } catch (e) {
@@ -123,7 +149,6 @@
         const urls = [
           "https://www.cloudflare.com/cdn-cgi/trace",
           "https://1.1.1.1/cdn-cgi/trace",
-          "https://cloudflare.com/cdn-cgi/trace",
         ];
         let lastErr = "unavailable";
         for (const u of urls) {
@@ -134,9 +159,7 @@
               name: "cloudflare/trace",
               ip: normalizeIp(t.ip),
               country: normalizeCc(t.loc),
-              timezone: t.colo || "",
               ok: !!t.ip,
-              raw: t,
             });
             return;
           } catch (e) {
@@ -151,20 +174,35 @@
     const ok = sources.filter((s) => s.ok && s.ip);
     const ips = [...new Set(ok.map((s) => s.ip))];
     const countries = [...new Set(ok.map((s) => s.country).filter(Boolean))];
-    let penalty = 0;
+    let delta = 0;
     const notes = [];
-    if (ips.length > 1 || countries.length > 1) {
-      penalty = 50;
+
+    // Штраф только при реальном расхождении ≥2 успешных источников
+    if (ok.length >= 2 && (ips.length > 1 || countries.length > 1)) {
+      delta = -50;
       notes.push(
         `Расхождение маршрута: IP=[${ips.join(" | ")}] страны=[${countries.join(" | ")}]`
       );
       ok.forEach((s) => {
-        notes.push(`· ${s.name}: IP ${s.ip || "—"}${s.country ? `, страна ${s.country}` : ""}`);
+        notes.push(
+          `· ${s.name}: IP ${s.ip || "—"}${s.country ? `, страна ${s.country}` : ""}`
+        );
       });
     } else if (ok.length < 2) {
-      notes.push("Недостаточно источников для кворума (нужно ≥2 успешных ответа)");
+      notes.push("Недостаточно источников для кворума (≥2 успешных ответа)");
+      ok.forEach((s) => {
+        notes.push(`· ${s.name}: IP ${s.ip || "—"}${s.country ? `, ${s.country}` : ""}`);
+      });
+      sources
+        .filter((s) => !s.ok)
+        .forEach((s) => notes.push(`· ${s.name}: ошибка (${s.error || "—"})`));
     } else {
       notes.push(`Кворум OK: ${ok[0].ip}${ok[0].country ? ` / ${ok[0].country}` : ""}`);
+      ok.forEach((s) => {
+        notes.push(
+          `· ${s.name}: IP ${s.ip || "—"}${s.country ? `, страна ${s.country}` : ""}`
+        );
+      });
     }
 
     const primary =
@@ -173,83 +211,106 @@
       ok[0] ||
       null;
 
-    return { sources, ok, ips, countries, penalty, notes, primary };
+    return { sources, ok, ips, countries, delta, notes, primary };
   }
 
   function geoFilter(quorum) {
     const cc = quorum.countries[0] || quorum.primary?.country || "";
     const blocked = BLOCKED.has(cc);
+    if (blocked) {
+      return {
+        country: cc,
+        blocked: true,
+        forceZero: true,
+        delta: 0,
+        notes: [`⛔ ВХОД ЗАПРЕЩЁН: регион ${cc} заблокирован в Claude`],
+      };
+    }
+    if (!cc) {
+      return {
+        country: "—",
+        blocked: false,
+        forceZero: false,
+        delta: 0,
+        notes: ["Страна IP не определена — базовые +50 не начислены"],
+      };
+    }
     return {
-      country: cc || "—",
-      blocked,
-      penalty: blocked ? 100 : 0, // force zero handled later
-      forceZero: blocked,
-      notes: blocked
-        ? [`⛔ Регион ${cc} в чёрном списке Anthropic Claude`]
-        : [`Страна IP: ${cc || "не определена"} — не в чёрном списке`],
+      country: cc,
+      blocked: false,
+      forceZero: false,
+      delta: 50,
+      notes: [`Страна ${cc} поддерживается Claude · +50`],
     };
   }
 
   function asnAnalysis(quorum) {
-    const blob = quorum.ok
-      .map((s) => `${s.asn || ""} ${s.isp || ""} ${s.org || ""}`)
-      .join(" ")
-      .toLowerCase();
     const asn =
-      quorum.ok.map((s) => s.asn).find((a) => a) ||
-      quorum.primary?.asn ||
+      formatAsn(quorum.ok.map((s) => s.asn).find(Boolean)) ||
+      formatAsn(quorum.primary?.asn) ||
       "AS?—неизвестно";
     const isp =
-      quorum.ok.map((s) => s.isp || s.org).find((x) => x) || "неизвестно";
+      quorum.ok.map((s) => s.isp || s.org).find(Boolean) ||
+      quorum.primary?.isp ||
+      "неизвестно";
+    const city =
+      quorum.ok.map((s) => s.city).find(Boolean) ||
+      quorum.primary?.city ||
+      "—";
+    const blob = quorum.ok
+      .map((s) => `${s.asn || ""} ${s.isp || ""} ${s.org || ""}`)
+      .join(" ");
 
-    const isDc = DC_KEYS.some((k) => blob.includes(k));
-    const isRes = RES_KEYS.some((k) => blob.includes(k));
-    let verdict = "⚠️ Не удалось уверенно классифицировать провайдера";
-    let penalty = 15;
-    if (isDc && !isRes) {
-      verdict = "⚠️ Дата-центр / Хостинг (Высокий риск бана)";
-      penalty = 35;
-    } else if (isRes && !isDc) {
-      verdict = "✅ Домашний провайдер (ISP / Residential)";
-      penalty = 0;
-    } else if (isRes && isDc) {
-      verdict = "🟡 Смешанные признаки ISP + hosting — проверьте вручную";
-      penalty = 20;
+    const hosting = isHostingBlob(blob);
+    if (hosting) {
+      return {
+        asn,
+        isp,
+        city,
+        delta: -30,
+        notes: [
+          `ASN: ${asn}`,
+          `Провайдер: ${isp}`,
+          `Город: ${city}`,
+          "⚠️ Облачный хостинг / дата-центр · −30",
+        ],
+      };
     }
     return {
       asn,
       isp,
-      verdict,
-      penalty,
-      notes: [`ASN: ${asn}`, `ISP/ORG: ${isp}`, verdict],
+      city,
+      delta: 30,
+      notes: [
+        `ASN: ${asn}`,
+        `Провайдер: ${isp}`,
+        `Город: ${city}`,
+        "✅ Чистый ISP / Static Residential · +30",
+      ],
     };
   }
 
   function parseIceCandidate(cand) {
-    // candidate: foundation component protocol priority ip port typ ...
     const parts = String(cand || "").split(" ");
     if (parts.length < 5) return null;
-    const ip = parts[4];
-    const typIdx = parts.indexOf("typ");
-    const typ = typIdx >= 0 ? parts[typIdx + 1] : "";
-    return { ip, typ, raw: cand };
+    return { ip: parts[4], raw: cand };
   }
 
-  function isPrivateIp(ip) {
-    if (!ip) return false;
+  function isPrivateOrLocal(ip) {
+    if (!ip) return true;
     if (ip.endsWith(".local")) return true;
     if (/^192\.168\./.test(ip)) return true;
     if (/^10\./.test(ip)) return true;
     if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) return true;
-    if (/^fc|fd/i.test(ip)) return true; // ULA IPv6
+    if (/^(fc|fd)/i.test(ip)) return true;
     if (ip === "::1" || ip.startsWith("127.")) return true;
+    if (ip === "0.0.0.0") return true;
     return false;
   }
 
   function isIpLike(ip) {
     return (
-      /^(\d{1,3}\.){3}\d{1,3}$/.test(ip) ||
-      (ip.includes(":") && !ip.includes(" "))
+      /^(\d{1,3}\.){3}\d{1,3}$/.test(ip) || (ip.includes(":") && !ip.includes(" "))
     );
   }
 
@@ -265,11 +326,14 @@
           ],
         });
       } catch (e) {
-        resolve({ public: [], local: [], all: [], error: e.message || String(e) });
+        resolve({ public: [], local: [], error: e.message || String(e) });
         return;
       }
 
+      let finished = false;
       const done = () => {
+        if (finished) return;
+        finished = true;
         try {
           pc.close();
         } catch (_) {
@@ -279,19 +343,24 @@
         const localIps = [];
         found.forEach((f) => {
           if (!isIpLike(f.ip)) return;
-          if (isPrivateIp(f.ip)) localIps.push(f.ip);
+          if (isPrivateOrLocal(f.ip)) localIps.push(f.ip);
           else publicIps.push(f.ip);
         });
         resolve({
           public: [...new Set(publicIps)],
           local: [...new Set(localIps)],
-          all: found,
         });
       };
 
-      const timer = setTimeout(done, 3000);
+      const timer = setTimeout(done, WEBRTC_MS);
       pc.onicecandidate = (ev) => {
-        if (!ev.candidate || !ev.candidate.candidate) return;
+        if (!ev.candidate || !ev.candidate.candidate) {
+          if (ev.candidate === null) {
+            clearTimeout(timer);
+            done();
+          }
+          return;
+        }
         const parsed = parseIceCandidate(ev.candidate.candidate);
         if (parsed) found.push(parsed);
       };
@@ -310,88 +379,48 @@
       return {
         public: [],
         local: [],
-        all: [],
-        penalty: 0,
+        delta: 0,
         notes: [`WebRTC недоступен: ${ice.error}`],
       };
     }
     const uniqPub = ice.public || [];
     const uniqLoc = ice.local || [];
-    let penalty = 0;
     const notes = [];
-    const leak = uniqPub.filter((ip) => normalizeIp(ip) !== normalizeIp(quorumIp));
+    const leak = uniqPub.filter(
+      (ip) => normalizeIp(ip) !== normalizeIp(quorumIp)
+    );
+    let delta = 0;
     if (leak.length) {
-      penalty += 40;
-      notes.push(`Критическая утечка WebRTC: ${leak.join(", ")} (кворум ${quorumIp || "—"})`);
+      delta = -35;
+      notes.push(
+        `Посторонний публичный IP: ${leak.join(", ")} (кворум ${quorumIp || "—"}) · −35`
+      );
     } else if (uniqPub.length) {
       notes.push(`Публичные ICE совпадают с кворумом: ${uniqPub.join(", ")}`);
     } else {
-      notes.push("Публичных ICE-адресов не обнаружено");
+      notes.push("Посторонних публичных IP не найдено");
     }
     if (uniqLoc.length) {
-      penalty += 10;
-      notes.push(`Локальные/незамаскированные адреса: ${uniqLoc.join(", ")}`);
+      notes.push(`Локальные (.local / RFC1918) — без штрафа: ${uniqLoc.join(", ")}`);
     }
-    return { public: uniqPub, local: uniqLoc, all: ice.all || [], penalty, notes };
+    return { public: uniqPub, local: uniqLoc, delta, notes };
   }
 
   function timezoneCheck(quorum) {
     const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "—";
-    const browserOffsetMin = -new Date().getTimezoneOffset(); // minutes east of UTC
-    let ipOffsetMin = null;
-    const offStr =
-      quorum.primary?.utc_offset ||
-      quorum.ok.map((s) => s.utc_offset).find(Boolean) ||
-      "";
-    // formats: +0800, +08:00, 8, -5
-    const m = String(offStr).match(/^([+-]?)(\d{1,2})(?::?(\d{2}))?$/);
-    if (m) {
-      const sign = m[1] === "-" ? -1 : 1;
-      ipOffsetMin = sign * (parseInt(m[2], 10) * 60 + parseInt(m[3] || "0", 10));
-    }
-    const ipTz = quorum.primary?.timezone || quorum.ok.map((s) => s.timezone).find(Boolean) || "—";
-    let penalty = 0;
+    const cc = quorum.countries[0] || quorum.primary?.country || "";
     const notes = [];
-    if (ipOffsetMin == null) {
+    let delta = 0;
+    // Мягкий штраф только: IP США + системный TZ Китай
+    if (cc === "US" && browserTz === "Asia/Shanghai") {
+      delta = -10;
       notes.push(
-        `Браузер: ${browserTz} (UTC${browserOffsetMin >= 0 ? "+" : ""}${browserOffsetMin / 60}), IP timezone: ${ipTz} (utc_offset неизвестен)`
+        `IP: США, браузер: Asia/Shanghai — переключите часовой пояс в профиле браузера · −10`
       );
     } else {
-      const diff = Math.abs(browserOffsetMin - ipOffsetMin);
-      const brH = browserOffsetMin / 60;
-      const ipH = ipOffsetMin / 60;
-      notes.push(
-        `Браузер: UTC${brH >= 0 ? "+" : ""}${brH} (${browserTz}), IP: UTC${ipH >= 0 ? "+" : ""}${ipH} (${ipTz}) — расхождение ${Math.round(diff / 60)} ч (${diff} мин)`
-      );
-      if (diff > 60) penalty = 20;
+      notes.push(`Браузер: ${browserTz}, страна IP: ${cc || "—"} — OK`);
     }
-    return { browserTz, browserOffsetMin, ipTz, ipOffsetMin, penalty, notes };
-  }
-
-  function localeCheck(quorumCountry) {
-    const webdriver = !!navigator.webdriver;
-    const langs = [...(navigator.languages || [navigator.language || ""])];
-    const hw = navigator.hardwareConcurrency || "?";
-    const mem = navigator.deviceMemory || "?";
-    let penalty = 0;
-    const notes = [];
-    if (webdriver) {
-      penalty += 30;
-      notes.push("navigator.webdriver = true (признак автоматизации)");
-    } else {
-      notes.push("navigator.webdriver = false");
-    }
-    notes.push(`languages: ${langs.join(", ") || "—"}`);
-    const onlyZhOrRu =
-      langs.length > 0 &&
-      langs.every((l) => /^zh/i.test(l) || /^ru/i.test(l)) &&
-      !langs.some((l) => /^en/i.test(l));
-    if (quorumCountry === "US" && onlyZhOrRu) {
-      penalty += 10;
-      notes.push("Языки только zh/ru без en-US при американском IP (−10)");
-    }
-    notes.push(`hardwareConcurrency=${hw}, deviceMemory=${mem}`);
-    return { webdriver, langs, hw, mem, penalty, notes };
+    return { browserTz, delta, notes };
   }
 
   async function rttCheck() {
@@ -400,82 +429,48 @@
     for (let i = 0; i < 3; i++) {
       const t0 = performance.now();
       try {
-        await fetchTimeout(url + `?t=${Date.now()}-${i}`, 5000, { method: "GET" });
+        await fetchTimeout(`${url}?t=${Date.now()}-${i}`, 5000);
         samples.push(performance.now() - t0);
       } catch (_) {
         try {
           await fetchTimeout(`https://1.1.1.1/cdn-cgi/trace?t=${Date.now()}-${i}`, 5000);
           samples.push(performance.now() - t0);
-        } catch (e2) {
+        } catch (_) {
           samples.push(null);
         }
       }
     }
     const ok = samples.filter((x) => x != null);
     if (!ok.length) {
-      return { avg: null, jitter: null, samples, penalty: 5, notes: ["Не удалось замерить RTT"] };
+      return { avg: null, delta: 0, notes: ["Не удалось замерить пинг"] };
     }
     const avg = ok.reduce((a, b) => a + b, 0) / ok.length;
-    const jitter =
-      ok.length > 1
-        ? Math.max(...ok) - Math.min(...ok)
-        : 0;
     return {
       avg,
-      jitter,
-      samples: ok,
-      penalty: avg > 400 ? 10 : avg > 200 ? 5 : 0,
+      delta: 0,
       notes: [
-        `Средний RTT: ${avg.toFixed(0)} мс`,
-        `Джиттер: ${jitter.toFixed(0)} мс`,
-        `Замеры: ${ok.map((x) => x.toFixed(0) + "мс").join(", ")}`,
+        `Средний пинг: ${avg.toFixed(0)} мс`,
+        `Замеры: ${ok.map((x) => `${x.toFixed(0)} мс`).join(", ")}`,
       ],
     };
   }
 
   function scoreClass(score) {
     if (score <= 49) return "bad";
-    if (score <= 79) return "mid";
+    if (score <= 74) return "mid";
     return "good";
   }
 
   function scoreLabel(score) {
     if (score <= 49) return "🔴 Опасно";
-    if (score <= 79) return "🟡 Есть риски";
+    if (score <= 74) return "🟡 Есть риски";
     return "🟢 Эталонная чистота";
   }
 
-  function buildFixes(parts, score) {
-    if (score >= 85) return [];
-    const fixes = [];
-    if (parts.geo.forceZero) {
-      fixes.push("Смените выход прокси/VPN на разрешённую страну (напр. US) — текущий регион блокирует Claude.");
-    }
-    if (parts.quorum.penalty) {
-      fixes.push("Отключите Split-Tunneling: весь трафик браузера должен идти через один выходной IP.");
-    }
-    if (parts.asn.penalty) {
-      fixes.push("Используйте резидентский Static IP (ISP), не дата-центр / VPS hosting.");
-    }
-    if (parts.webrtc.penalty >= 40) {
-      fixes.push("Отключите WebRTC в браузере / расширении VPN (утечка реального IP).");
-    } else if (parts.webrtc.penalty >= 10) {
-      fixes.push("Скройте локальные ICE-адреса (WebRTC leak shield).");
-    }
-    if (parts.tz.penalty) {
-      fixes.push("Выровняйте часовой пояс системы/браузера под страну IP.");
-    }
-    if (parts.locale.webdriver) {
-      fixes.push("Отключите automation / webdriver флаги (не используйте управляемый ChromeDriver).");
-    }
-    if (parts.locale.penalty >= 10 && !parts.locale.webdriver) {
-      fixes.push("Добавьте en-US в языки браузера (navigator.languages) при US IP.");
-    }
-    if (parts.rtt.penalty) {
-      fixes.push("Проверьте стабильность канала: высокий RTT/джиттер может палиться антифродом.");
-    }
-    if (!fixes.length) fixes.push("Перепроверьте VPN/прокси и повторите аудит.");
-    return fixes;
+  function formatDelta(d) {
+    if (d > 0) return `+${d}`;
+    if (d < 0) return `${d}`;
+    return "0";
   }
 
   function render(result) {
@@ -488,43 +483,32 @@
       {
         title: "1. Кворум IP (4 источника)",
         detail: parts.quorum.notes.map(esc).join("<br>"),
-        penalty: parts.quorum.penalty,
+        delta: parts.quorum.delta,
       },
       {
         title: "2. Гео-фильтр Claude",
         detail: parts.geo.notes.map(esc).join("<br>"),
-        penalty: parts.geo.forceZero ? "FORCE 0" : parts.geo.penalty,
+        delta: parts.geo.forceZero ? "0/100" : parts.geo.delta,
       },
       {
-        title: "3. ASN / ISP",
+        title: "3. ASN / провайдер",
         detail: parts.asn.notes.map(esc).join("<br>"),
-        penalty: parts.asn.penalty,
+        delta: parts.asn.delta,
       },
       {
         title: "4. WebRTC",
-        detail: parts.webrtc.notes.map(esc).join("<br>") +
-          (parts.webrtc.public.length
-            ? `<br>Public: ${esc(parts.webrtc.public.join(", "))}`
-            : "") +
-          (parts.webrtc.local.length
-            ? `<br>Local: ${esc(parts.webrtc.local.join(", "))}`
-            : ""),
-        penalty: parts.webrtc.penalty,
+        detail: parts.webrtc.notes.map(esc).join("<br>"),
+        delta: parts.webrtc.delta,
       },
       {
         title: "5. Часовой пояс",
         detail: parts.tz.notes.map(esc).join("<br>"),
-        penalty: parts.tz.penalty,
+        delta: parts.tz.delta,
       },
       {
-        title: "6. Locale & Automation",
-        detail: parts.locale.notes.map(esc).join("<br>"),
-        penalty: parts.locale.penalty,
-      },
-      {
-        title: "7. RTT / джиттер",
+        title: "6. Пинг",
         detail: parts.rtt.notes.map(esc).join("<br>"),
-        penalty: parts.rtt.penalty,
+        delta: parts.rtt.delta,
       },
     ];
 
@@ -545,22 +529,14 @@
             (r) => `
           <div class="shield-row">
             <div class="shield-row-title">${esc(r.title)}</div>
+            <div class="shield-row-pen">${
+              typeof r.delta === "number" ? esc(formatDelta(r.delta)) : esc(r.delta)
+            }</div>
             <div class="shield-row-body">${r.detail}</div>
-            <div class="shield-row-pen">−${esc(r.penalty)}</div>
           </div>`
           )
           .join("")}
       </div>
-      ${
-        result.fixes.length
-          ? `<div class="block" style="margin-top:12px">
-        <h3 style="margin:0 0 8px;font-size:14px">Что исправить прямо сейчас</h3>
-        <ul class="shield-fixes">
-          ${result.fixes.map((f) => `<li>${esc(f)}</li>`).join("")}
-        </ul>
-      </div>`
-          : ""
-      }
     `;
   }
 
@@ -570,10 +546,9 @@
     const status = document.getElementById("shield-status");
     const btn = document.getElementById("btn-shield-run");
     if (btn) btn.disabled = true;
-    if (status) status.textContent = "Идёт глубокий аудит (7 проверок)…";
+    if (status) status.textContent = "Идёт проверка (6 уровней)…";
 
     try {
-      // Параллельно: кворум IP, WebRTC ICE, RTT; остальное — мгновенный анализ по результатам
       const [quorum, ice, rtt] = await Promise.all([
         quorumCheck(),
         webrtcGather(),
@@ -583,27 +558,27 @@
       const asn = asnAnalysis(quorum);
       const webrtc = scoreWebrtc(ice, quorum.ips[0] || quorum.primary?.ip || "");
       const tz = timezoneCheck(quorum);
-      const locale = localeCheck(quorum.countries[0] || quorum.primary?.country || "");
 
-      let score = 100;
-      score -= quorum.penalty;
-      score -= asn.penalty;
-      score -= webrtc.penalty;
-      score -= tz.penalty;
-      score -= locale.penalty;
-      score -= rtt.penalty;
+      let score = 0;
+      score += geo.delta;
+      score += asn.delta;
+      score += quorum.delta;
+      score += webrtc.delta;
+      score += tz.delta;
+      // rtt: без влияния на балл
       if (geo.forceZero) score = 0;
       score = Math.max(0, Math.min(100, score));
 
-      const parts = { quorum, geo, asn, webrtc, tz, locale, rtt };
-      const fixes = buildFixes(parts, score);
-      render({ score, parts, fixes });
+      render({
+        score,
+        parts: { quorum, geo, asn, webrtc, tz, rtt },
+      });
       if (status) status.textContent = `Готово · ${new Date().toLocaleTimeString("ru-RU")}`;
     } catch (e) {
-      if (status) status.textContent = `Ошибка аудита: ${e.message || e}`;
+      if (status) status.textContent = `Ошибка: ${e.message || e}`;
       const root = document.getElementById("shield-root");
       if (root) {
-        root.innerHTML = `<div class="empty">Сбой аудита: ${esc(e.message || e)}</div>`;
+        root.innerHTML = `<div class="empty">Сбой проверки: ${esc(e.message || e)}</div>`;
       }
     } finally {
       running = false;
@@ -614,12 +589,6 @@
   function boot() {
     const btn = document.getElementById("btn-shield-run");
     if (btn) btn.addEventListener("click", () => runAudit());
-
-    document.querySelectorAll(".tab-btn").forEach((tab) => {
-      tab.addEventListener("click", () => {
-        if (tab.dataset.tab === "shield") runAudit();
-      });
-    });
   }
 
   if (document.readyState === "loading") {

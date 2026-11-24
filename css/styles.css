@@ -732,9 +732,10 @@ a {
 .shield-row-pen {
   font-size: 12px;
   font-weight: 700;
-  color: var(--warn);
+  color: var(--accent-2);
   grid-column: 2;
   justify-self: end;
+  font-variant-numeric: tabular-nums;
 }
 .shield-row-body {
   grid-column: 1 / -1;
