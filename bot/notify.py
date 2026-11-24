@@ -11,34 +11,54 @@ Telegram-уведомления для Personal & YouTube Command Center.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 BOT_DIR = Path(__file__).resolve().parent
 if str(BOT_DIR) not in sys.path:
     sys.path.insert(0, str(BOT_DIR))
 
 try:
-    import requests
     import urllib3.util.connection as urllib3_cn
+except ImportError:  # pragma: no cover
+    urllib3_cn = None  # type: ignore
+
+# GitHub Actions иногда резолвит api.telegram.org в IPv6 → Read timed out.
+# Принудительно используем только IPv4 (urllib3 + socket.getaddrinfo).
+if urllib3_cn is not None:
+    urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
+
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
+
+try:
+    from crypto_util import load_and_decrypt
 except ImportError:  # pragma: no cover
     print("Установите зависимости: pip install -r bot/requirements.txt", file=sys.stderr)
     sys.exit(1)
 
-# GitHub Actions иногда резолвит api.telegram.org в IPv6 → Read timed out.
-# Принудительно используем только IPv4.
-urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
-
-from crypto_util import load_and_decrypt
-
 TELEGRAM_TIMEOUT = 20
-TELEGRAM_RETRIES = 3
+TELEGRAM_POST_ATTEMPTS = 2
 TELEGRAM_RETRY_PAUSE = 3
+TELEGRAM_GET_FALLBACK_TIMEOUT = 60
+TELEGRAM_USER_AGENT = (
+    "CommandCenterBot/1.0 (+https://github.com/rstvs4ks42-hash/command-center; urllib)"
+)
 
 # Время Китая (Нанкин) UTC+8
 CN_TZ = timezone(timedelta(hours=8))
@@ -103,56 +123,174 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
     return (d - today).days
 
 
+def _telegram_opener() -> urllib.request.OpenerDirector:
+    proxy = os.environ.get("TG_PROXY_URL", "").strip()
+    handlers: list[Any] = []
+    if proxy:
+        print(f"Telegram: используем TG_PROXY_URL={proxy}", file=sys.stderr)
+        handlers.append(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
+    else:
+        print("Telegram: прямое соединение с api.telegram.org (без TG_PROXY_URL)", file=sys.stderr)
+    return urllib.request.build_opener(*handlers)
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        token in text
+        for token in (
+            "timed out",
+            "timeout",
+            "read timed out",
+            "the read operation timed out",
+        )
+    )
+
+
+def _parse_telegram_body(status: int, body: str) -> Dict[str, Any]:
+    body = (body or "").strip()
+    print(f"Telegram HTTP {status}: {body or '(пустой ответ)'}", file=sys.stderr)
+    if status != 200:
+        raise RuntimeError(f"Telegram API error {status}: {body or '(пустой ответ)'}")
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Telegram вернул не-JSON ответ: {body or '(пусто)'}") from exc
+    if not data.get("ok"):
+        desc = data.get("description") or body or "неизвестная ошибка Telegram"
+        raise RuntimeError(f"Telegram API ok=false: {desc}")
+    return data
+
+
+def _urllib_request(
+    method: str,
+    url: str,
+    *,
+    data: Optional[bytes] = None,
+    timeout: int,
+    opener: urllib.request.OpenerDirector,
+) -> Tuple[int, str]:
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "User-Agent": TELEGRAM_USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    if data is not None:
+        req.add_header("Content-Type", "application/json; charset=utf-8")
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return int(getattr(resp, "status", 200) or 200), raw
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        return int(exc.code), raw
+
+
 def send_telegram(text: str) -> None:
+    """POST через urllib (+ опциональный TG_PROXY_URL); при 429/timeout — GET fallback."""
     token, chat_id = require_telegram_secrets()
+    opener = _telegram_opener()
+    post_url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps(
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-
+    retryable_failure = False
     last_error: Optional[BaseException] = None
-    for attempt in range(1, TELEGRAM_RETRIES + 1):
+
+    for attempt in range(1, TELEGRAM_POST_ATTEMPTS + 1):
         try:
             print(
-                f"Telegram send attempt {attempt}/{TELEGRAM_RETRIES} (IPv4, timeout={TELEGRAM_TIMEOUT}s)",
+                f"Telegram POST attempt {attempt}/{TELEGRAM_POST_ATTEMPTS} "
+                f"(urllib/IPv4, timeout={TELEGRAM_TIMEOUT}s)",
                 file=sys.stderr,
             )
-            resp = requests.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
-        except (requests.exceptions.RequestException, OSError) as exc:
+            status, body = _urllib_request(
+                "POST",
+                post_url,
+                data=payload,
+                timeout=TELEGRAM_TIMEOUT,
+                opener=opener,
+            )
+            if status == 429:
+                retryable_failure = True
+                last_error = RuntimeError(f"HTTP 429: {body or '(пусто)'}")
+                print(
+                    f"WARN: HTTP 429 на попытке {attempt}/{TELEGRAM_POST_ATTEMPTS} — {body or '(пусто)'}",
+                    file=sys.stderr,
+                )
+                if attempt < TELEGRAM_POST_ATTEMPTS:
+                    time.sleep(TELEGRAM_RETRY_PAUSE)
+                continue
+
+            _parse_telegram_body(status, body)
+            return
+        except Exception as exc:  # noqa: BLE001
             last_error = exc
             msg = str(exc).strip() or repr(exc) or type(exc).__name__
-            print(f"WARN: попытка {attempt}/{TELEGRAM_RETRIES} не удалась — {msg}", file=sys.stderr)
-            if attempt < TELEGRAM_RETRIES:
-                time.sleep(TELEGRAM_RETRY_PAUSE)
-            continue
-
-        body = (resp.text or "").strip()
-        print(f"Telegram HTTP {resp.status_code}: {body or '(пустой ответ)'}", file=sys.stderr)
-
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"Telegram API error {resp.status_code}: {body or '(пустой ответ)'}"
+            if _is_timeout_error(exc) or "429" in msg:
+                retryable_failure = True
+            print(
+                f"WARN: POST попытка {attempt}/{TELEGRAM_POST_ATTEMPTS} не удалась — {msg}",
+                file=sys.stderr,
             )
+            if attempt < TELEGRAM_POST_ATTEMPTS and (_is_timeout_error(exc) or "429" in msg):
+                time.sleep(TELEGRAM_RETRY_PAUSE)
+                continue
+            if not (_is_timeout_error(exc) or "429" in msg):
+                # Логические ошибки API (401 и т.п.) — без GET-fallback
+                raise
 
-        try:
-            data = resp.json()
-        except Exception:  # noqa: BLE001
-            raise RuntimeError(f"Telegram вернул не-JSON ответ: {body or '(пусто)'}") from None
+    if not retryable_failure and last_error is not None:
+        raise RuntimeError(str(last_error).strip() or repr(last_error))
 
-        if not data.get("ok"):
-            desc = data.get("description") or body or "неизвестная ошибка Telegram"
-            raise RuntimeError(f"Telegram API ok=false: {desc}")
-
+    # Fallback: GET sendMessage после 429 / Read timed out
+    query = urllib.parse.urlencode(
+        {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "True",
+        },
+        encoding="utf-8",
+    )
+    get_url = f"https://api.telegram.org/bot{token}/sendMessage?{query}"
+    print(
+        f"Telegram GET fallback (timeout={TELEGRAM_GET_FALLBACK_TIMEOUT}s) после 429/timeout",
+        file=sys.stderr,
+    )
+    try:
+        status, body = _urllib_request(
+            "GET",
+            get_url,
+            timeout=TELEGRAM_GET_FALLBACK_TIMEOUT,
+            opener=opener,
+        )
+        print(
+            f"Telegram GET fallback status={status} body={body or '(пустой ответ)'}",
+            file=sys.stderr,
+        )
+        _parse_telegram_body(status, body)
+        print("OK: GET fallback доставил сообщение", file=sys.stderr)
         return
-
-    err = str(last_error).strip() if last_error else "неизвестная ошибка"
-    if not err and last_error is not None:
-        err = repr(last_error) or type(last_error).__name__
-    raise RuntimeError(f"Telegram: не удалось отправить после {TELEGRAM_RETRIES} попыток — {err}")
+    except Exception as exc:  # noqa: BLE001
+        prev = str(last_error).strip() if last_error else ""
+        cur = str(exc).strip() or repr(exc) or type(exc).__name__
+        raise RuntimeError(
+            f"Telegram: POST исчерпан ({prev or '429/timeout'}), GET fallback тоже не удался — {cur}"
+        ) from exc
 
 
 def monetization_block(state: Dict[str, Any]) -> str:
