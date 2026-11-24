@@ -1,7 +1,7 @@
 # Personal & YouTube Command Center
 
 Бессерверное веб-приложение для ведения YouTube-конвейера, привычек, бюджета и подписок.  
-Работает **24/7 бесплатно** на **GitHub Pages + GitHub Actions** и шлёт **пуш-уведомления в Telegram** на iPhone — даже когда ноутбук выключен.
+Работает **24/7 бесплатно** на **GitHub Pages + GitHub Actions** и шлёт **пуш-уведомления через ntfy.sh** на iPhone — даже когда ноутбук выключен.
 
 Единый источник правды: файл [`data/state.json`](data/state.json) — в публичном репозитории хранится **только зашифрованный конверт** (AES-256-GCM + PBKDF2-SHA256). Расшифровка в браузере по личному PIN и в GitHub Actions по секрету `APP_PASSWORD`.
 
@@ -65,9 +65,9 @@ PIN на время вкладки лежит в `sessionStorage` (после з
 
 ---
 
-## Telegram-бот без сервера
+## Пуш через ntfy.sh (без сервера)
 
-Уведомления шлёт GitHub Actions по расписанию:
+Уведомления шлёт GitHub Actions по расписанию на бесплатный [ntfy.sh](https://ntfy.sh):
 
 | Режим | Время (Нанкин, UTC+8) | UTC | Содержание |
 |-------|------------------------|-----|------------|
@@ -76,53 +76,38 @@ PIN на время вкладки лежит в `sessionStorage` (после з
 
 Файлы: [`bot/notify.py`](bot/notify.py), [`.github/workflows/telegram_cron.yml`](.github/workflows/telegram_cron.yml).
 
-### Шаг A — создайте бота в @BotFather
+### Шаг A — подписка на топик (iPhone)
 
-1. Откройте Telegram → найдите **[@BotFather](https://t.me/BotFather)**.
-2. Отправьте `/newbot`.
-3. Укажите имя и username (должен заканчиваться на `bot`).
-4. Скопируйте **HTTP API Token** вида `123456:ABC-DEF...` — это `BOT_TOKEN`.
+1. Установите приложение **ntfy** ([App Store](https://apps.apple.com/app/ntfy/id1625396347) / [сайт](https://ntfy.sh/docs/subscribe/phone/)).
+2. Придумайте **уникальный** топик (длинный и секретный), например `cc-ruslan-x7k9m2`.
+3. В приложении: Subscribe → введите этот топик.
+4. Тот же топик будет секретом `NTFY_TOPIC`.
 
-### Шаг B — узнайте свой CHAT_ID
-
-1. Напишите своему боту любое сообщение (например, «привет»).
-2. В браузере откройте (подставьте токен):  
-   `https://api.telegram.org/bot<BOT_TOKEN>/getUpdates`
-3. В JSON найдите `"chat":{"id": 123456789}` — это `CHAT_ID` (для лички — число; для группы часто отрицательное).
-
-Альтернатива: бот [@userinfobot](https://t.me/userinfobot) покажет ваш id.
-
-### Шаг C — добавьте GitHub Secrets
+### Шаг B — GitHub Secrets
 
 1. Репозиторий → **Settings** → **Secrets and variables** → **Actions**.
 2. **New repository secret**:
-   - Имя: `BOT_TOKEN` → значение токена от BotFather.
-   - Имя: `CHAT_ID` → ваш chat id.
-   - Имя: `APP_PASSWORD` → **тот же PIN/пароль**, что вы задали в приложении.
-   - (Опционально) `TG_PROXY_URL` → базовый URL вместо `https://api.telegram.org` (без `/` в конце), если с IP Actions ловите `429` / timeout.
+   - Имя: `NTFY_TOPIC` → ваш топик из шага A.
+   - Имя: `APP_PASSWORD` → **тот же PIN/пароль**, что в приложении (для расшифровки `state.json`).
 3. Actions должен быть включён: **Settings** → **Actions** → **General** → Allow actions.
 
-> Если смените PIN в настройках приложения — сразу обновите секрет `APP_PASSWORD`, иначе бот перестанет читать данные.  
-> Бот шлёт обычный текст через `urllib` (без HTML parse_mode, IPv4); при `429`/таймауте после 2 POST делает GET-fallback.
+> Старые секреты `BOT_TOKEN` / `CHAT_ID` / `TG_PROXY_URL` больше не нужны.  
+> Если смените PIN — обновите `APP_PASSWORD`.
 
-### Шаг D — проверьте вручную
+### Шаг C — проверка
 
-1. **Actions** → workflow **Telegram Cron (Command Center)** → **Run workflow**.
+1. **Actions** → workflow **ntfy Cron (Command Center)** → **Run workflow**.
 2. Выберите `morning` или `evening` → Run.
-3. Через несколько секунд сообщение должно прийти в Telegram.
+3. Пуш должен прийти в ntfy (заголовок «YouTube Command Center», тег 🚀).
 
-Cron на бесплатных раннерах GitHub может срабатывать с задержкой до ~15 минут — это нормально.
-
-### Локальный тест скрипта
+### Локальный тест
 
 ```bash
 pip install -r bot/requirements.txt
 # PowerShell:
-$env:BOT_TOKEN="..."
-$env:CHAT_ID="..."
+$env:NTFY_TOPIC="ваш-топик"
 $env:APP_PASSWORD="ваш-пин"
 python bot/notify.py --mode morning
-python bot/notify.py --mode evening
 ```
 
 ---
@@ -176,7 +161,7 @@ python -c "from pathlib import Path; from bot.crypto_util import load_and_decryp
 ├── js/state.js                # state + encrypted GitHub sync
 ├── js/app.js                  # 5 вкладок + lock screen
 ├── data/state.json            # зашифрованный конверт (не plaintext)
-├── bot/notify.py              # Telegram-уведомления
+├── bot/notify.py              # пуш через ntfy.sh
 ├── bot/crypto_util.py         # расшифровка для бота / CLI
 ├── bot/requirements.txt
 ├── .github/workflows/telegram_cron.yml
@@ -188,10 +173,11 @@ python -c "from pathlib import Path; from bot.crypto_util import load_and_decryp
 
 ## Безопасность
 
-- **Не коммитьте** PAT, `BOT_TOKEN`, `CHAT_ID`, `APP_PASSWORD` и plaintext-данные.
+- **Не коммитьте** PAT, `NTFY_TOPIC`, `APP_PASSWORD` и plaintext-данные.
+- Топик ntfy держите секретным (кто знает имя — может подписаться на публичный ntfy.sh).
 - В публичном `data/state.json` видны только salt/iv/ciphertext — не задачи и не бюджет.
 - PAT в интерфейсе живёт только в `localStorage` устройства.
-- PIN — в `sessionStorage` до закрытия вкладки; для бота — только GitHub Secret `APP_PASSWORD`.
+- PIN — в `sessionStorage` до закрытия вкладки; для бота — GitHub Secret `APP_PASSWORD`.
 - Рекомендуется fine-grained token с доступом к одному репо и правом Contents.
 
 ---

@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Telegram-уведомления для Personal & YouTube Command Center.
+Пуш-уведомления через ntfy.sh для Personal & YouTube Command Center.
 Читает (и при необходимости расшифровывает) data/state.json,
 шлёт утренний брифинг или вечерний «умный пинок».
 
-Секреты: BOT_TOKEN, CHAT_ID, APP_PASSWORD (env / GitHub Secrets).
+Секреты: NTFY_TOPIC, APP_PASSWORD (env / GitHub Secrets).
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import socket
 import sys
-import time
 import traceback
 import urllib.error
-import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-# Последний HTTP-ответ Telegram/прокси (для диагностики перед exit)
 LAST_HTTP_RESPONSE: Dict[str, Any] = {
     "status_code": None,
     "text": None,
@@ -40,8 +36,6 @@ try:
 except ImportError:  # pragma: no cover
     urllib3_cn = None  # type: ignore
 
-# GitHub Actions иногда резолвит api.telegram.org в IPv6 → Read timed out.
-# Принудительно используем только IPv4 (urllib3 + socket.getaddrinfo).
 if urllib3_cn is not None:
     urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
 
@@ -60,27 +54,24 @@ except ImportError:  # pragma: no cover
     print("Установите зависимости: pip install -r bot/requirements.txt", file=sys.stderr)
     sys.exit(1)
 
-TELEGRAM_TIMEOUT = 20
-TELEGRAM_POST_ATTEMPTS = 2
-TELEGRAM_RETRY_PAUSE = 3
-TELEGRAM_GET_FALLBACK_TIMEOUT = 60
-TELEGRAM_USER_AGENT = (
-    "CommandCenterBot/1.0 (+https://github.com/rstvs4ks42-hash/command-center; urllib)"
+NTFY_BASE = "https://ntfy.sh"
+NTFY_TIMEOUT = 30
+NTFY_USER_AGENT = (
+    "CommandCenterBot/1.0 (+https://github.com/rstvs4ks42-hash/command-center; ntfy)"
 )
+NTFY_CLICK = "https://rstvs4ks42-hash.github.io/command-center/"
 
-# Время Китая (Нанкин) UTC+8
 CN_TZ = timezone(timedelta(hours=8))
 ROOT = BOT_DIR.parent
 STATE_PATH = ROOT / "data" / "state.json"
 
-
-def today_cn() -> date:
-    return datetime.now(CN_TZ).date()
-
-
 SETUP_MESSAGE = (
     "✅ Связь настроена! Command Center подключён, ожидаю первой синхронизации данных с сайта."
 )
+
+
+def today_cn() -> date:
+    return datetime.now(CN_TZ).date()
 
 
 def load_state() -> Dict[str, Any]:
@@ -90,7 +81,6 @@ def load_state() -> Dict[str, Any]:
 
 
 def try_load_state() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Вернуть (state, None) или (None, причина), не бросая исключение наружу."""
     try:
         return load_state(), None
     except Exception as exc:  # noqa: BLE001
@@ -98,21 +88,30 @@ def try_load_state() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         return None, reason
 
 
-def require_telegram_secrets() -> tuple[str, str]:
-    missing = []
-    token = os.environ.get("BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("CHAT_ID", "").strip()
-    if not token:
-        missing.append("BOT_TOKEN")
-    if not chat_id:
-        missing.append("CHAT_ID")
-    if missing:
-        names = ", ".join(missing)
+def require_ntfy_topic() -> str:
+    topic = os.environ.get("NTFY_TOPIC", "").strip()
+    print(f"NTFY_TOPIC is set: {bool(topic)}", file=sys.stderr)
+    if not topic:
         raise RuntimeError(
-            f"Не задан GitHub Secret / переменная окружения: {names}. "
-            "Добавьте в Settings → Secrets and variables → Actions."
+            "Не задан GitHub Secret / переменная окружения: NTFY_TOPIC. "
+            "Добавьте в Settings → Secrets and variables → Actions "
+            "(уникальное имя топика, напр. my-cc-ruslan-42)."
         )
-    return token, chat_id
+    return topic
+
+
+def remember_http_response(
+    status_code: Optional[int],
+    text: Optional[str],
+    *,
+    url_safe: Optional[str] = None,
+) -> None:
+    LAST_HTTP_RESPONSE["status_code"] = status_code
+    LAST_HTTP_RESPONSE["text"] = text
+    if url_safe is not None:
+        LAST_HTTP_RESPONSE["url_safe"] = url_safe
+    print(f"resp.status_code = {status_code!r}", file=sys.stderr)
+    print(f"resp.text = {(text if text is not None else '') or '(пусто)'}", file=sys.stderr)
 
 
 def parse_date(s: Optional[str]) -> Optional[date]:
@@ -131,260 +130,53 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
     return (d - today).days
 
 
-def tg_proxy_is_set() -> bool:
-    return bool(os.environ.get("TG_PROXY_URL", "").strip())
+def send_ntfy(text: str) -> None:
+    """POST https://ntfy.sh/{NTFY_TOPIC} с заголовками Title/Priority/Tags/Click."""
+    topic = require_ntfy_topic()
+    url = f"{NTFY_BASE}/{topic}"
+    url_safe = f"{NTFY_BASE}/***"
+    print(f"ntfy endpoint: {NTFY_BASE}/{{NTFY_TOPIC}}", file=sys.stderr)
 
-
-def log_tg_proxy_flag() -> None:
-    """Печатает True/False без значения секрета."""
-    print(f"TG_PROXY_URL is set: {tg_proxy_is_set()}", file=sys.stderr)
-
-
-def telegram_api_base() -> tuple[str, str]:
-    """Вернуть (base_url, source): source = 'TG_PROXY_URL' | 'api.telegram.org'."""
-    log_tg_proxy_flag()
-    proxy = os.environ.get("TG_PROXY_URL", "").strip().rstrip("/")
-    if proxy:
-        print(
-            f"Telegram base URL: {proxy} (источник: секрет/env TG_PROXY_URL)",
-            file=sys.stderr,
-        )
-        return proxy, "TG_PROXY_URL"
-    base = "https://api.telegram.org"
-    print(
-        f"Telegram base URL: {base} (источник: api.telegram.org, TG_PROXY_URL не задан)",
-        file=sys.stderr,
-    )
-    return base, "api.telegram.org"
-
-
-def remember_http_response(
-    status_code: Optional[int],
-    text: Optional[str],
-    *,
-    url_safe: Optional[str] = None,
-) -> None:
-    LAST_HTTP_RESPONSE["status_code"] = status_code
-    LAST_HTTP_RESPONSE["text"] = text
-    if url_safe is not None:
-        LAST_HTTP_RESPONSE["url_safe"] = url_safe
-    print(f"resp.status_code = {status_code!r}", file=sys.stderr)
-    print(f"resp.text = {(text if text is not None else '') or '(пусто)'}", file=sys.stderr)
-
-
-def _telegram_opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener()
-
-
-def _is_timeout_error(exc: BaseException) -> bool:
-    text = f"{type(exc).__name__}: {exc}".lower()
-    return any(
-        token in text
-        for token in (
-            "timed out",
-            "timeout",
-            "read timed out",
-            "the read operation timed out",
-        )
-    )
-
-
-def _parse_telegram_body(status: int, body: str, *, context: str = "") -> Dict[str, Any]:
-    body = (body or "").strip()
-    prefix = f"[{context}] " if context else ""
-    snippet = (body[:300] if body else "(пустой ответ)")
-    print(f"{prefix}Telegram HTTP status={status}", file=sys.stderr)
-    print(f"{prefix}Telegram response body (first 300): {snippet}", file=sys.stderr)
-    if status != 200:
-        print(f"{prefix}Telegram response (first 300 chars): {snippet}", file=sys.stderr)
-        raise RuntimeError(
-            f"{prefix}Telegram API error status={status}, body[:300]={snippet}"
-        )
-    try:
-        data = json.loads(body) if body else {}
-    except json.JSONDecodeError as exc:
-        print(f"{prefix}Telegram non-JSON response (first 300 chars): {snippet}", file=sys.stderr)
-        raise RuntimeError(
-            f"{prefix}Telegram вернул не-JSON ответ (first 300): {snippet}"
-        ) from exc
-
-    # Обязательно строгое "ok": true в JSON
-    if data.get("ok") is not True:
-        desc = data.get("description") if isinstance(data, dict) else None
-        print(
-            f"{prefix}Telegram JSON без ok:true. description={desc!r}. "
-            f"Ответ (первые 300 символов): {snippet}",
-            file=sys.stderr,
-        )
-        raise RuntimeError(
-            f"{prefix}Telegram JSON must contain \"ok\": true, got ok={data.get('ok')!r}. "
-            f"body[:300]={snippet}"
-        )
-    return data
-
-
-def _urllib_request(
-    method: str,
-    url: str,
-    *,
-    data: Optional[bytes] = None,
-    timeout: int,
-    opener: urllib.request.OpenerDirector,
-    url_safe: Optional[str] = None,
-) -> Tuple[int, str]:
+    body = text.encode("utf-8")
     req = urllib.request.Request(
         url,
-        data=data,
-        method=method,
+        data=body,
+        method="POST",
         headers={
-            "User-Agent": TELEGRAM_USER_AGENT,
-            "Accept": "application/json",
+            "User-Agent": NTFY_USER_AGENT,
+            "Title": "YouTube Command Center",
+            "Priority": "default",
+            "Tags": "rocket",
+            "Click": NTFY_CLICK,
+            "Content-Type": "text/plain; charset=utf-8",
         },
     )
-    if data is not None:
-        req.add_header("Content-Type", "application/json; charset=utf-8")
+
     try:
-        with opener.open(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=NTFY_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             status = int(getattr(resp, "status", 200) or 200)
             remember_http_response(status, raw, url_safe=url_safe)
-            return status, raw
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         remember_http_response(int(exc.code), raw, url_safe=url_safe)
-        return int(exc.code), raw
-    except Exception:
-        # Сетевые ошибки без HTTP-ответа
-        remember_http_response(None, None, url_safe=url_safe)
-        raise
-
-
-def send_telegram(text: str) -> None:
-    """POST через urllib; база = TG_PROXY_URL или api.telegram.org; при 429/timeout — GET fallback.
-    Сообщение — обычный текст (без parse_mode), чтобы Telegram не отклонял из‑за разметки.
-    """
-    token, chat_id = require_telegram_secrets()
-    opener = _telegram_opener()
-    api_base, base_source = telegram_api_base()
-    url_safe = f"{api_base}/bot***/sendMessage"
-    # В лог — путь без токена
-    print(
-        f"Telegram endpoint path: {url_safe} (base={base_source})",
-        file=sys.stderr,
-    )
-    post_url = f"{api_base}/bot{token}/sendMessage"
-    payload = json.dumps(
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-
-    retryable_failure = False
-    last_error: Optional[BaseException] = None
-
-    for attempt in range(1, TELEGRAM_POST_ATTEMPTS + 1):
-        try:
-            print(
-                f"Telegram POST attempt {attempt}/{TELEGRAM_POST_ATTEMPTS} "
-                f"(urllib/IPv4, timeout={TELEGRAM_TIMEOUT}s, base={base_source}) → {api_base}",
-                file=sys.stderr,
-            )
-            status, body = _urllib_request(
-                "POST",
-                post_url,
-                data=payload,
-                timeout=TELEGRAM_TIMEOUT,
-                opener=opener,
-                url_safe=url_safe,
-            )
-            if status == 429:
-                retryable_failure = True
-                last_error = RuntimeError(
-                    f"HTTP 429 Too Many Requests: {body or '(пустой ответ сервера)'}"
-                )
-                print(
-                    f"WARN: HTTP 429 на попытке {attempt}/{TELEGRAM_POST_ATTEMPTS} — "
-                    f"resp.status_code={status} resp.text={body or '(пусто)'}",
-                    file=sys.stderr,
-                )
-                if attempt < TELEGRAM_POST_ATTEMPTS:
-                    time.sleep(TELEGRAM_RETRY_PAUSE)
-                continue
-
-            _parse_telegram_body(status, body, context=f"POST#{attempt}")
-            return
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            msg = str(exc).strip() or repr(exc) or type(exc).__name__
-            if _is_timeout_error(exc) or "429" in msg:
-                retryable_failure = True
-            print(
-                f"WARN: POST попытка {attempt}/{TELEGRAM_POST_ATTEMPTS} не удалась — "
-                f"точный текст ошибки: {msg}",
-                file=sys.stderr,
-            )
-            print(
-                f"WARN dump: resp.status_code={LAST_HTTP_RESPONSE.get('status_code')!r} "
-                f"resp.text={LAST_HTTP_RESPONSE.get('text')!r}",
-                file=sys.stderr,
-            )
-            if attempt < TELEGRAM_POST_ATTEMPTS and (_is_timeout_error(exc) or "429" in msg):
-                time.sleep(TELEGRAM_RETRY_PAUSE)
-                continue
-            if not (_is_timeout_error(exc) or "429" in msg):
-                # Логические ошибки API (401 и т.п.) — без GET-fallback
-                raise
-
-    if not retryable_failure and last_error is not None:
-        raise RuntimeError(str(last_error).strip() or repr(last_error))
-
-    # Fallback: GET sendMessage после 429 / Read timed out
-    query = urllib.parse.urlencode(
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": "True",
-        },
-        encoding="utf-8",
-    )
-    get_url = f"{api_base}/bot{token}/sendMessage?{query}"
-    print(
-        f"Telegram GET fallback (timeout={TELEGRAM_GET_FALLBACK_TIMEOUT}s, base={base_source}) → {api_base}",
-        file=sys.stderr,
-    )
-    try:
-        status, body = _urllib_request(
-            "GET",
-            get_url,
-            timeout=TELEGRAM_GET_FALLBACK_TIMEOUT,
-            opener=opener,
-            url_safe=url_safe,
-        )
-        print(
-            f"Telegram GET fallback resp.status_code={status} resp.text={body or '(пустой ответ)'}",
-            file=sys.stderr,
-        )
-        _parse_telegram_body(status, body, context="GET-fallback")
-        print("OK: GET fallback доставил сообщение", file=sys.stderr)
-        return
-    except Exception as exc:  # noqa: BLE001
-        prev = str(last_error).strip() if last_error else ""
-        cur = str(exc).strip() or repr(exc) or type(exc).__name__
-        print(
-            f"ERROR detail: POST={prev or '429/timeout'} | GET={cur}",
-            file=sys.stderr,
-        )
-        print(
-            f"ERROR dump: resp.status_code={LAST_HTTP_RESPONSE.get('status_code')!r} "
-            f"resp.text={LAST_HTTP_RESPONSE.get('text')!r}",
-            file=sys.stderr,
-        )
+        snippet = (raw or "")[:300] or "(пустой ответ)"
         raise RuntimeError(
-            f"Telegram: POST исчерпан ({prev or '429/timeout'}), GET fallback тоже не удался — {cur}"
+            f"ntfy HTTP error status={exc.code}, body[:300]={snippet}"
         ) from exc
+    except Exception as exc:  # noqa: BLE001
+        remember_http_response(None, None, url_safe=url_safe)
+        msg = str(exc).strip() or repr(exc) or type(exc).__name__
+        raise RuntimeError(f"ntfy request failed: {msg}") from exc
+
+    status = LAST_HTTP_RESPONSE.get("status_code")
+    raw = LAST_HTTP_RESPONSE.get("text") or ""
+    snippet = raw[:300] if raw else "(пустой ответ)"
+    if status != 200:
+        print(f"ntfy error response (first 300): {snippet}", file=sys.stderr)
+        raise RuntimeError(f"ntfy expected HTTP 200, got status={status}, body[:300]={snippet}")
+
+    print(f"OK: ntfy accepted message (status={status})", file=sys.stderr)
 
 
 def monetization_block(state: Dict[str, Any]) -> str:
@@ -405,11 +197,9 @@ def monetization_block(state: Dict[str, Any]) -> str:
 
 
 def videos_today(state: Dict[str, Any], today: date) -> List[Dict[str, Any]]:
-    """Ролики в работе: сначала с датой публикации = сегодня, затем остальные незавершённые."""
     out = []
     for v in state.get("videos") or []:
-        stage = v.get("stage")
-        if stage == "published":
+        if v.get("stage") == "published":
             continue
         out.append(v)
     out.sort(
@@ -570,7 +360,7 @@ def evening_message(state: Dict[str, Any]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Telegram notify for Command Center")
+    parser = argparse.ArgumentParser(description="ntfy.sh notify for Command Center")
     parser.add_argument(
         "--mode",
         choices=("morning", "evening"),
@@ -579,10 +369,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    log_tg_proxy_flag()
-
-    # Сначала проверяем секреты Telegram — без них слать некуда
-    require_telegram_secrets()
+    require_ntfy_topic()
 
     state, load_error = try_load_state()
     if state is None:
@@ -597,8 +384,8 @@ def main() -> int:
         kind = args.mode
 
     print(text)
-    send_telegram(text)
-    print(f"OK: sent --mode {args.mode} ({kind})", file=sys.stderr)
+    send_ntfy(text)
+    print(f"OK: sent --mode {args.mode} ({kind}) via ntfy.sh", file=sys.stderr)
     return 0
 
 
@@ -618,5 +405,5 @@ if __name__ == "__main__":
         )
         if LAST_HTTP_RESPONSE.get("url_safe"):
             print(f"url = {LAST_HTTP_RESPONSE.get('url_safe')}", file=sys.stderr)
-        print(f"TG_PROXY_URL is set: {tg_proxy_is_set()}", file=sys.stderr)
+        print(f"NTFY_TOPIC is set: {bool(os.environ.get('NTFY_TOPIC', '').strip())}", file=sys.stderr)
         raise SystemExit(1)

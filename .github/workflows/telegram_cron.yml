@@ -1,4 +1,4 @@
-name: Telegram Cron (Command Center)
+name: ntfy Cron (Command Center)
 
 on:
   schedule:
@@ -47,12 +47,8 @@ jobs:
             echo "value=evening" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Send Telegram notification
+      - name: Send ntfy.sh notification
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          # Опционально: замена базы API (без / в конце), напр. https://tg-proxy.example.com
-          # Если задан — вместо https://api.telegram.org используется TG_PROXY_URL
-          TG_PROXY_URL: ${{ secrets.TG_PROXY_URL }}
         run: python bot/notify.py --mode "${{ steps.mode.outputs.value }}"

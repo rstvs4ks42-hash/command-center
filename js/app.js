@@ -947,7 +947,7 @@
       sub.textContent =
         mode === "migrate"
           ? "Старый plaintext будет зашифрован AES-GCM перед отправкой на GitHub. Тот же пароль укажите в секрете APP_PASSWORD."
-          : "Этот PIN шифрует data/state.json. Укажите его же в GitHub Secret APP_PASSWORD для Telegram-бота.";
+          : "Этот PIN шифрует data/state.json. Укажите его же в GitHub Secret APP_PASSWORD для бота (ntfy).";
       setupFields.hidden = false;
       loginFields.hidden = true;
       $("#lock-pass1")?.focus();
