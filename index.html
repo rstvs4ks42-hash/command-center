@@ -13,15 +13,56 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b8cff'/%3E%3C/svg%3E">
 </head>
 <body>
+  <div class="lock-gate" id="lock-gate" hidden>
+    <div class="lock-card">
+      <div class="brand" style="justify-content:center;margin-bottom:14px">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <h1 style="font-size:18px">Command Center</h1>
+      </div>
+      <h2 id="lock-title">Вход</h2>
+      <p class="section-sub" id="lock-sub" style="margin-bottom:14px"></p>
+
+      <form id="lock-form-login">
+        <div id="lock-login-fields">
+          <div class="field">
+            <label for="lock-pass">PIN / пароль</label>
+            <input id="lock-pass" type="password" autocomplete="current-password" inputmode="text" placeholder="••••">
+          </div>
+          <button class="btn btn-primary" type="submit" id="lock-btn-login" style="width:100%;margin-top:12px">Войти</button>
+        </div>
+      </form>
+
+      <form id="lock-form-setup">
+        <div id="lock-setup-fields" hidden>
+          <div class="field">
+            <label for="lock-pass1">Новый PIN / пароль</label>
+            <input id="lock-pass1" type="password" autocomplete="new-password" placeholder="минимум 4 символа">
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label for="lock-pass2">Повтор</label>
+            <input id="lock-pass2" type="password" autocomplete="new-password" placeholder="ещё раз">
+          </div>
+          <button class="btn btn-primary" type="submit" id="lock-btn-setup" style="width:100%;margin-top:12px">Создать и зашифровать</button>
+        </div>
+      </form>
+
+      <p class="lock-error" id="lock-error" role="alert"></p>
+      <p class="muted" style="margin-top:14px;text-align:center">AES-256-GCM · PBKDF2-SHA256 · пароль не сохраняется на сервере</p>
+    </div>
+  </div>
+
   <div class="app" id="app-root">
     <header class="app-header">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true"></div>
         <h1>Command Center</h1>
       </div>
-      <div class="sync-pill" id="sync-pill" title="Статус синхронизации">
-        <span class="sync-dot"></span>
-        <span id="sync-label">Локально</span>
+      <div class="header-actions">
+        <button class="btn btn-sm btn-ghost" id="header-lock" title="Заблокировать">🔒</button>
+        <div class="sync-pill" id="sync-pill" title="Статус синхронизации">
+          <span class="sync-dot"></span>
+          <span id="sync-label">Локально</span>
+        </div>
       </div>
     </header>
 
@@ -199,6 +240,7 @@
         <div class="secret-note">
           Создайте Personal Access Token с правом <strong>contents: write</strong> (classic: repo).
           Токен не попадает в репозиторий — только в память браузера на этом устройстве.
+          В GitHub уходит только <strong>зашифрованный</strong> <code>data/state.json</code>.
         </div>
         <div class="form-grid">
           <div class="field">
@@ -225,12 +267,25 @@
       </div>
 
       <div class="block">
+        <div class="block-head"><h3>Смена PIN / пароля</h3></div>
+        <div class="form-grid">
+          <div class="field"><label>Текущий</label><input id="pin-old" type="password" autocomplete="current-password"></div>
+          <div class="field"><label>Новый</label><input id="pin-new" type="password" autocomplete="new-password"></div>
+          <div class="field"><label>Повтор нового</label><input id="pin-new2" type="password" autocomplete="new-password"></div>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="btn-change-pin">Сменить пароль</button>
+            <button class="btn" id="btn-lock">Заблокировать сейчас</button>
+          </div>
+          <p class="muted">После смены обновите GitHub Secret <code>APP_PASSWORD</code> — иначе бот не сможет читать данные.</p>
+        </div>
+      </div>
+
+      <div class="block">
         <h3 style="margin:0 0 8px;font-size:14px">Как это работает 24/7</h3>
         <p class="muted" style="margin:0;line-height:1.6">
-          Сайт на GitHub Pages. Любое изменение данных с телефона или ПК через API записывает
-          <code>data/state.json</code> в репозиторий. GitHub Actions дважды в день читает этот файл
-          и шлёт пуш в Telegram — даже когда ноутбук выключен. Claude Code на ПК может
-          <code>git pull</code> / править / <code>git push</code> тот же файл.
+          Сайт на GitHub Pages. Данные шифруются в браузере (AES-GCM) вашим PIN и только потом
+          записываются в <code>data/state.json</code>. GitHub Actions расшифровывает файл секретом
+          <code>APP_PASSWORD</code> и шлёт пуш в Telegram — даже когда ноутбук выключен.
         </p>
       </div>
     </section>
@@ -245,6 +300,7 @@
 
   <div class="toast" id="toast"></div>
 
+  <script src="js/crypto.js"></script>
   <script src="js/state.js"></script>
   <script src="js/app.js"></script>
 </body>

@@ -6,7 +6,14 @@
     todayISO,
     daysUntil,
     getState,
-    loadState,
+    loadVaultMeta,
+    unlockWithPassword,
+    setupPassword,
+    changePassword,
+    lockApp,
+    tryAutoUnlock,
+    isUnlocked,
+    getAuthMode,
     updateState,
     getGithubCreds,
     setGithubCreds,
@@ -14,6 +21,7 @@
     pullFromGithub,
     onSyncStatus,
     onChange,
+    onAuth,
     convertAmount,
   } = window.CC;
 
@@ -877,7 +885,7 @@
           repo: $("#gh-repo").value.trim(),
         });
         await pushToGithub(true);
-        toast("Отправлено в GitHub");
+        toast("Зашифрованный state отправлен");
       } catch (e) {
         toast(e.message || "Ошибка push");
       }
@@ -891,11 +899,112 @@
           repo: $("#gh-repo").value.trim(),
         });
         await pullFromGithub();
-        toast("Загружено из GitHub");
+        toast("Загружено и расшифровано");
       } catch (e) {
         toast(e.message || "Ошибка pull");
       }
     };
+
+    $("#btn-change-pin").onclick = async () => {
+      try {
+        await changePassword(
+          $("#pin-old").value,
+          $("#pin-new").value,
+          $("#pin-new2").value
+        );
+        $("#pin-old").value = "";
+        $("#pin-new").value = "";
+        $("#pin-new2").value = "";
+        toast("PIN/пароль изменён — не забудьте обновить секрет APP_PASSWORD");
+      } catch (e) {
+        toast(e.message || "Не удалось сменить пароль");
+      }
+    };
+
+    $("#btn-lock").onclick = () => {
+      lockApp();
+      showLockScreen();
+    };
+  }
+
+  function showLockScreen() {
+    const gate = $("#lock-gate");
+    const app = $("#app-root");
+    gate.hidden = false;
+    app.classList.add("app-blurred");
+    app.setAttribute("aria-hidden", "true");
+
+    const mode = getAuthMode();
+    const title = $("#lock-title");
+    const sub = $("#lock-sub");
+    const setupFields = $("#lock-setup-fields");
+    const loginFields = $("#lock-login-fields");
+    const err = $("#lock-error");
+    err.textContent = "";
+
+    if (mode === "setup" || mode === "migrate") {
+      title.textContent = mode === "migrate" ? "Защитите данные PIN-кодом" : "Создайте PIN / пароль";
+      sub.textContent =
+        mode === "migrate"
+          ? "Старый plaintext будет зашифрован AES-GCM перед отправкой на GitHub. Тот же пароль укажите в секрете APP_PASSWORD."
+          : "Этот PIN шифрует data/state.json. Укажите его же в GitHub Secret APP_PASSWORD для Telegram-бота.";
+      setupFields.hidden = false;
+      loginFields.hidden = true;
+      $("#lock-pass1")?.focus();
+    } else {
+      title.textContent = "Вход в Command Center";
+      sub.textContent = "Введите личный PIN или пароль для расшифровки данных.";
+      setupFields.hidden = true;
+      loginFields.hidden = false;
+      $("#lock-pass")?.focus();
+    }
+  }
+
+  function hideLockScreen() {
+    $("#lock-gate").hidden = true;
+    $("#app-root").classList.remove("app-blurred");
+    $("#app-root").removeAttribute("aria-hidden");
+  }
+
+  function bindLockScreen() {
+    $("#lock-form-login").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = $("#lock-error");
+      err.textContent = "";
+      const btn = $("#lock-btn-login");
+      btn.disabled = true;
+      try {
+        await unlockWithPassword($("#lock-pass").value);
+        $("#lock-pass").value = "";
+        hideLockScreen();
+        renderAll();
+        toast("Данные расшифрованы");
+      } catch (ex) {
+        err.textContent = ex.message || "Ошибка входа";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $("#lock-form-setup").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = $("#lock-error");
+      err.textContent = "";
+      const btn = $("#lock-btn-setup");
+      btn.disabled = true;
+      try {
+        await setupPassword($("#lock-pass1").value, $("#lock-pass2").value);
+        $("#lock-pass1").value = "";
+        $("#lock-pass2").value = "";
+        hideLockScreen();
+        renderAll();
+        toast("Шифрование включено");
+      } catch (ex) {
+        err.textContent = ex.message || "Ошибка настройки";
+      } finally {
+        btn.disabled = false;
+      }
+    });
   }
 
   /* -------- Full re-render -------- */
@@ -915,8 +1024,13 @@
     bindBudget();
     bindPrompts();
     bindSettings();
+    bindLockScreen();
 
     $("#btn-add-video").onclick = () => openVideoModal(null);
+    $("#header-lock").onclick = () => {
+      lockApp();
+      showLockScreen();
+    };
     $("#cal-prev").onclick = () => {
       calMonth.setMonth(calMonth.getMonth() - 1);
       renderCalendar();
@@ -929,20 +1043,32 @@
       if (e.target.id === "modal") closeModal();
     });
 
+    onChange(() => {
+      if (isUnlocked()) renderAll();
+    });
+    onAuth(({ unlocked: ok }) => {
+      if (!ok) showLockScreen();
+      else hideLockScreen();
+    });
+
     try {
-      await loadState();
+      await loadVaultMeta();
     } catch (e) {
-      $("#app-root").innerHTML = `<div class="block"><p>Ошибка загрузки: ${esc(e.message)}</p>
-        <p class="muted">Откройте сайт через GitHub Pages или локальный HTTP-сервер.</p></div>`;
+      $("#lock-error").textContent = e.message || "Ошибка загрузки хранилища";
+      showLockScreen();
       return;
     }
 
-    onChange(() => renderAll());
-    renderAll();
+    const auto = await tryAutoUnlock();
+    if (auto) {
+      hideLockScreen();
+      renderAll();
+    } else {
+      showLockScreen();
+    }
 
-    // If credentials exist, mark as ready / try silent pull once
     const creds = getGithubCreds();
-    if (creds.token && creds.owner && creds.repo) {
+    if (creds.token && creds.owner && creds.repo && isUnlocked()) {
       window.CC.setSyncStatus("ok");
     }
   }

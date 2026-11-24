@@ -51,4 +51,5 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: python bot/notify.py --mode "${{ steps.mode.outputs.value }}"

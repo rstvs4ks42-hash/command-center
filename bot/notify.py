@@ -2,31 +2,36 @@
 # -*- coding: utf-8 -*-
 """
 Telegram-уведомления для Personal & YouTube Command Center.
-Читает data/state.json и шлёт утренний брифинг или вечерний «умный пинок».
+Читает (и при необходимости расшифровывает) data/state.json,
+шлёт утренний брифинг или вечерний «умный пинок».
 
-Зависимости: только requests (stdlib urllib как fallback не нужен при наличии requests).
-Секреты: BOT_TOKEN, CHAT_ID (env / GitHub Secrets).
+Секреты: BOT_TOKEN, CHAT_ID, APP_PASSWORD (env / GitHub Secrets).
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+BOT_DIR = Path(__file__).resolve().parent
+if str(BOT_DIR) not in sys.path:
+    sys.path.insert(0, str(BOT_DIR))
+
 try:
     import requests
 except ImportError:  # pragma: no cover
-    print("Установите requests: pip install requests", file=sys.stderr)
+    print("Установите зависимости: pip install -r bot/requirements.txt", file=sys.stderr)
     sys.exit(1)
+
+from crypto_util import load_and_decrypt
 
 # Время Китая (Нанкин) UTC+8
 CN_TZ = timezone(timedelta(hours=8))
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = BOT_DIR.parent
 STATE_PATH = ROOT / "data" / "state.json"
 
 
@@ -37,8 +42,7 @@ def today_cn() -> date:
 def load_state() -> Dict[str, Any]:
     if not STATE_PATH.exists():
         raise FileNotFoundError(f"Не найден {STATE_PATH}")
-    with STATE_PATH.open(encoding="utf-8") as f:
-        return json.load(f)
+    return load_and_decrypt(STATE_PATH)
 
 
 def parse_date(s: Optional[str]) -> Optional[date]:
