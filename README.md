@@ -103,7 +103,7 @@ PIN на время вкладки лежит в `sessionStorage` (после з
 3. Actions должен быть включён: **Settings** → **Actions** → **General** → Allow actions.
 
 > Если смените PIN в настройках приложения — сразу обновите секрет `APP_PASSWORD`, иначе бот перестанет читать данные.  
-> Бот шлёт сообщения через `urllib` (IPv4, кастомный User-Agent); при `429`/таймауте после 2 POST делает GET-fallback.
+> Бот шлёт обычный текст через `urllib` (без HTML parse_mode, IPv4); при `429`/таймауте после 2 POST делает GET-fallback.
 
 ### Шаг D — проверьте вручную
 

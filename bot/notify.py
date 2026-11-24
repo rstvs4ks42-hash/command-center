@@ -123,14 +123,21 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
     return (d - today).days
 
 
-def telegram_api_base() -> str:
-    """База Bot API: TG_PROXY_URL (без слэша в конце) или https://api.telegram.org."""
+def telegram_api_base() -> tuple[str, str]:
+    """Вернуть (base_url, source): source = 'TG_PROXY_URL' | 'api.telegram.org'."""
     proxy = os.environ.get("TG_PROXY_URL", "").strip().rstrip("/")
     if proxy:
-        print(f"Telegram: база API = TG_PROXY_URL ({proxy})", file=sys.stderr)
-        return proxy
-    print("Telegram: база API = https://api.telegram.org", file=sys.stderr)
-    return "https://api.telegram.org"
+        print(
+            f"Telegram base URL: {proxy} (источник: секрет/env TG_PROXY_URL)",
+            file=sys.stderr,
+        )
+        return proxy, "TG_PROXY_URL"
+    base = "https://api.telegram.org"
+    print(
+        f"Telegram base URL: {base} (источник: api.telegram.org, TG_PROXY_URL не задан)",
+        file=sys.stderr,
+    )
+    return base, "api.telegram.org"
 
 
 def _telegram_opener() -> urllib.request.OpenerDirector:
@@ -150,18 +157,25 @@ def _is_timeout_error(exc: BaseException) -> bool:
     )
 
 
-def _parse_telegram_body(status: int, body: str) -> Dict[str, Any]:
+def _parse_telegram_body(status: int, body: str, *, context: str = "") -> Dict[str, Any]:
     body = (body or "").strip()
-    print(f"Telegram HTTP {status}: {body or '(пустой ответ)'}", file=sys.stderr)
+    prefix = f"[{context}] " if context else ""
+    print(f"{prefix}Telegram HTTP status={status}", file=sys.stderr)
+    print(f"{prefix}Telegram response body: {body or '(пустой ответ)'}", file=sys.stderr)
     if status != 200:
-        raise RuntimeError(f"Telegram API error {status}: {body or '(пустой ответ)'}")
+        raise RuntimeError(
+            f"{prefix}Telegram API error status={status}, body={body or '(пустой ответ)'}"
+        )
     try:
         data = json.loads(body) if body else {}
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Telegram вернул не-JSON ответ: {body or '(пусто)'}") from exc
+        raise RuntimeError(
+            f"{prefix}Telegram вернул не-JSON ответ: {body or '(пусто)'}"
+        ) from exc
     if not data.get("ok"):
         desc = data.get("description") or body or "неизвестная ошибка Telegram"
-        raise RuntimeError(f"Telegram API ok=false: {desc}")
+        print(f"{prefix}Telegram error description: {desc}", file=sys.stderr)
+        raise RuntimeError(f"{prefix}Telegram API ok=false: {desc} | raw={body or '(пусто)'}")
     return data
 
 
@@ -194,16 +208,22 @@ def _urllib_request(
 
 
 def send_telegram(text: str) -> None:
-    """POST через urllib; база = TG_PROXY_URL или api.telegram.org; при 429/timeout — GET fallback."""
+    """POST через urllib; база = TG_PROXY_URL или api.telegram.org; при 429/timeout — GET fallback.
+    Сообщение — обычный текст (без parse_mode), чтобы Telegram не отклонял из‑за разметки.
+    """
     token, chat_id = require_telegram_secrets()
     opener = _telegram_opener()
-    api_base = telegram_api_base()
+    api_base, base_source = telegram_api_base()
+    # В лог — путь без токена
+    print(
+        f"Telegram endpoint path: {api_base}/bot***/sendMessage (base={base_source})",
+        file=sys.stderr,
+    )
     post_url = f"{api_base}/bot{token}/sendMessage"
     payload = json.dumps(
         {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         },
         ensure_ascii=False,
@@ -216,7 +236,7 @@ def send_telegram(text: str) -> None:
         try:
             print(
                 f"Telegram POST attempt {attempt}/{TELEGRAM_POST_ATTEMPTS} "
-                f"(urllib/IPv4, timeout={TELEGRAM_TIMEOUT}s) → {api_base}",
+                f"(urllib/IPv4, timeout={TELEGRAM_TIMEOUT}s, base={base_source}) → {api_base}",
                 file=sys.stderr,
             )
             status, body = _urllib_request(
@@ -228,16 +248,19 @@ def send_telegram(text: str) -> None:
             )
             if status == 429:
                 retryable_failure = True
-                last_error = RuntimeError(f"HTTP 429: {body or '(пусто)'}")
+                last_error = RuntimeError(
+                    f"HTTP 429 Too Many Requests: {body or '(пустой ответ сервера)'}"
+                )
                 print(
-                    f"WARN: HTTP 429 на попытке {attempt}/{TELEGRAM_POST_ATTEMPTS} — {body or '(пусто)'}",
+                    f"WARN: HTTP 429 на попытке {attempt}/{TELEGRAM_POST_ATTEMPTS} — "
+                    f"точный ответ сервера: {body or '(пусто)'}",
                     file=sys.stderr,
                 )
                 if attempt < TELEGRAM_POST_ATTEMPTS:
                     time.sleep(TELEGRAM_RETRY_PAUSE)
                 continue
 
-            _parse_telegram_body(status, body)
+            _parse_telegram_body(status, body, context=f"POST#{attempt}")
             return
         except Exception as exc:  # noqa: BLE001
             last_error = exc
@@ -245,7 +268,8 @@ def send_telegram(text: str) -> None:
             if _is_timeout_error(exc) or "429" in msg:
                 retryable_failure = True
             print(
-                f"WARN: POST попытка {attempt}/{TELEGRAM_POST_ATTEMPTS} не удалась — {msg}",
+                f"WARN: POST попытка {attempt}/{TELEGRAM_POST_ATTEMPTS} не удалась — "
+                f"точный текст ошибки: {msg}",
                 file=sys.stderr,
             )
             if attempt < TELEGRAM_POST_ATTEMPTS and (_is_timeout_error(exc) or "429" in msg):
@@ -263,14 +287,13 @@ def send_telegram(text: str) -> None:
         {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "HTML",
             "disable_web_page_preview": "True",
         },
         encoding="utf-8",
     )
     get_url = f"{api_base}/bot{token}/sendMessage?{query}"
     print(
-        f"Telegram GET fallback (timeout={TELEGRAM_GET_FALLBACK_TIMEOUT}s) → {api_base}",
+        f"Telegram GET fallback (timeout={TELEGRAM_GET_FALLBACK_TIMEOUT}s, base={base_source}) → {api_base}",
         file=sys.stderr,
     )
     try:
@@ -281,15 +304,19 @@ def send_telegram(text: str) -> None:
             opener=opener,
         )
         print(
-            f"Telegram GET fallback status={status} body={body or '(пустой ответ)'}",
+            f"Telegram GET fallback status={status} exact body={body or '(пустой ответ)'}",
             file=sys.stderr,
         )
-        _parse_telegram_body(status, body)
+        _parse_telegram_body(status, body, context="GET-fallback")
         print("OK: GET fallback доставил сообщение", file=sys.stderr)
         return
     except Exception as exc:  # noqa: BLE001
         prev = str(last_error).strip() if last_error else ""
         cur = str(exc).strip() or repr(exc) or type(exc).__name__
+        print(
+            f"ERROR detail: POST={prev or '429/timeout'} | GET={cur}",
+            file=sys.stderr,
+        )
         raise RuntimeError(
             f"Telegram: POST исчерпан ({prev or '429/timeout'}), GET fallback тоже не удался — {cur}"
         ) from exc
@@ -306,7 +333,7 @@ def monetization_block(state: Dict[str, Any]) -> str:
     sub_pct = min(100.0, (subs / subs_goal * 100) if subs_goal else 0)
     hours_pct = min(100.0, (hours / hours_goal * 100) if hours_goal else 0)
     return (
-        f"📈 <b>Монетизация</b>\n"
+        f"📈 Монетизация\n"
         f"Подписчики: {subs:,} / {subs_goal:,} ({sub_pct:.0f}%) — осталось {sub_left:,}\n"
         f"Часы просмотра: {hours:,.0f} / {hours_goal:,.0f} ({hours_pct:.0f}%) — осталось {hours_left:,.0f} ч"
     ).replace(",", " ")
@@ -382,11 +409,11 @@ def tasks_today(state: Dict[str, Any], today: date) -> List[Dict[str, Any]]:
 def morning_message(state: Dict[str, Any]) -> str:
     today = today_cn()
     lines = [
-        f"☀️ <b>Утренний брифинг</b> · {today.strftime('%d.%m.%Y')}",
+        f"☀️ Утренний брифинг · {today.strftime('%d.%m.%Y')}",
         "",
         monetization_block(state),
         "",
-        "🎬 <b>Ролики в работе</b>",
+        "🎬 Ролики в работе",
     ]
     vids = videos_today(state, today)
     if not vids:
@@ -401,7 +428,7 @@ def morning_message(state: Dict[str, Any]) -> str:
             )
 
     lines.append("")
-    lines.append("✅ <b>Привычки на сегодня</b>")
+    lines.append("✅ Привычки на сегодня")
     habits = habits_status(state, today)
     if not habits:
         lines.append("Список привычек пуст.")
@@ -413,12 +440,12 @@ def morning_message(state: Dict[str, Any]) -> str:
     warns = subscription_warnings(state, today, threshold=3)
     if warns:
         lines.append("")
-        lines.append("💳 <b>Продления ≤ 3 дней</b>")
+        lines.append("💳 Продления ≤ 3 дней")
         lines.extend(warns)
 
     streak = (state.get("streak") or {}).get("current") or 0
     lines.append("")
-    lines.append(f"🔥 Текущая серия: <b>{streak}</b> дн. Удачного дня!")
+    lines.append(f"🔥 Текущая серия: {streak} дн. Удачного дня!")
     return "\n".join(lines)
 
 
@@ -432,19 +459,19 @@ def evening_message(state: Dict[str, Any]) -> str:
     best = (state.get("streak") or {}).get("best") or 0
 
     lines = [
-        f"🌙 <b>Вечерний умный пинок</b> · {today.strftime('%d.%m.%Y')}",
+        f"🌙 Вечерний умный пинок · {today.strftime('%d.%m.%Y')}",
         "",
     ]
 
     if not open_habits and habits:
         lines.append("Отлично! Все привычки за сегодня закрыты. 💪")
     elif open_habits:
-        lines.append("<b>Незакрытые привычки:</b>")
+        lines.append("Незакрытые привычки:")
         for n in open_habits:
             lines.append(f"⬜️ {n}")
         lines.append("")
         lines.append(
-            f"Не сбивай серию: сейчас <b>{streak}</b> дн."
+            f"Не сбивай серию: сейчас {streak} дн."
             + (f" (рекорд {best})." if best else ".")
         )
         lines.append("Закрой остаток до полуночи по Китаю — завтра будет легче.")
@@ -453,7 +480,7 @@ def evening_message(state: Dict[str, Any]) -> str:
 
     if open_tasks:
         lines.append("")
-        lines.append("<b>Открытые задачи на сегодня:</b>")
+        lines.append("Открытые задачи на сегодня:")
         for t in open_tasks[:8]:
             prio = {"high": "🔴", "medium": "🟡", "low": "⚪"}.get(t.get("priority"), "•")
             lines.append(f"{prio} {t.get('title') or 'Задача'}")
