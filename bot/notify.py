@@ -192,22 +192,34 @@ def _is_timeout_error(exc: BaseException) -> bool:
 def _parse_telegram_body(status: int, body: str, *, context: str = "") -> Dict[str, Any]:
     body = (body or "").strip()
     prefix = f"[{context}] " if context else ""
+    snippet = (body[:300] if body else "(пустой ответ)")
     print(f"{prefix}Telegram HTTP status={status}", file=sys.stderr)
-    print(f"{prefix}Telegram response body: {body or '(пустой ответ)'}", file=sys.stderr)
+    print(f"{prefix}Telegram response body (first 300): {snippet}", file=sys.stderr)
     if status != 200:
+        print(f"{prefix}Telegram response (first 300 chars): {snippet}", file=sys.stderr)
         raise RuntimeError(
-            f"{prefix}Telegram API error status={status}, body={body or '(пустой ответ)'}"
+            f"{prefix}Telegram API error status={status}, body[:300]={snippet}"
         )
     try:
         data = json.loads(body) if body else {}
     except json.JSONDecodeError as exc:
+        print(f"{prefix}Telegram non-JSON response (first 300 chars): {snippet}", file=sys.stderr)
         raise RuntimeError(
-            f"{prefix}Telegram вернул не-JSON ответ: {body or '(пусто)'}"
+            f"{prefix}Telegram вернул не-JSON ответ (first 300): {snippet}"
         ) from exc
-    if not data.get("ok"):
-        desc = data.get("description") or body or "неизвестная ошибка Telegram"
-        print(f"{prefix}Telegram error description: {desc}", file=sys.stderr)
-        raise RuntimeError(f"{prefix}Telegram API ok=false: {desc} | raw={body or '(пусто)'}")
+
+    # Обязательно строгое "ok": true в JSON
+    if data.get("ok") is not True:
+        desc = data.get("description") if isinstance(data, dict) else None
+        print(
+            f"{prefix}Telegram JSON без ok:true. description={desc!r}. "
+            f"Ответ (первые 300 символов): {snippet}",
+            file=sys.stderr,
+        )
+        raise RuntimeError(
+            f"{prefix}Telegram JSON must contain \"ok\": true, got ok={data.get('ok')!r}. "
+            f"body[:300]={snippet}"
+        )
     return data
 
 
