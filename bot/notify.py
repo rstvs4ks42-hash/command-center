@@ -39,10 +39,41 @@ def today_cn() -> date:
     return datetime.now(CN_TZ).date()
 
 
+SETUP_MESSAGE = (
+    "✅ Связь настроена! Command Center подключён, ожидаю первой синхронизации данных с сайта."
+)
+
+
 def load_state() -> Dict[str, Any]:
     if not STATE_PATH.exists():
         raise FileNotFoundError(f"Не найден {STATE_PATH}")
     return load_and_decrypt(STATE_PATH)
+
+
+def try_load_state() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Вернуть (state, None) или (None, причина), не бросая исключение наружу."""
+    try:
+        return load_state(), None
+    except Exception as exc:  # noqa: BLE001
+        reason = str(exc).strip() or repr(exc) or type(exc).__name__
+        return None, reason
+
+
+def require_telegram_secrets() -> tuple[str, str]:
+    missing = []
+    token = os.environ.get("BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("CHAT_ID", "").strip()
+    if not token:
+        missing.append("BOT_TOKEN")
+    if not chat_id:
+        missing.append("CHAT_ID")
+    if missing:
+        names = ", ".join(missing)
+        raise RuntimeError(
+            f"Не задан GitHub Secret / переменная окружения: {names}. "
+            "Добавьте в Settings → Secrets and variables → Actions."
+        )
+    return token, chat_id
 
 
 def parse_date(s: Optional[str]) -> Optional[date]:
@@ -62,10 +93,7 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
 
 
 def send_telegram(text: str) -> None:
-    token = os.environ.get("BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("CHAT_ID", "").strip()
-    if not token or not chat_id:
-        raise RuntimeError("Нужны переменные окружения BOT_TOKEN и CHAT_ID")
+    token, chat_id = require_telegram_secrets()
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -75,8 +103,20 @@ def send_telegram(text: str) -> None:
         "disable_web_page_preview": True,
     }
     resp = requests.post(url, json=payload, timeout=30)
+    body = (resp.text or "").strip()
+    print(f"Telegram HTTP {resp.status_code}: {body or '(пустой ответ)'}", file=sys.stderr)
+
     if resp.status_code != 200:
-        raise RuntimeError(f"Telegram API error {resp.status_code}: {resp.text}")
+        raise RuntimeError(f"Telegram API error {resp.status_code}: {body or '(пустой ответ)'}")
+
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        raise RuntimeError(f"Telegram вернул не-JSON ответ: {body or '(пусто)'}") from None
+
+    if not data.get("ok"):
+        desc = data.get("description") or body or "неизвестная ошибка Telegram"
+        raise RuntimeError(f"Telegram API ok=false: {desc}")
 
 
 def monetization_block(state: Dict[str, Any]) -> str:
@@ -271,11 +311,24 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    state = load_state()
-    text = morning_message(state) if args.mode == "morning" else evening_message(state)
+    # Сначала проверяем секреты Telegram — без них слать некуда
+    require_telegram_secrets()
+
+    state, load_error = try_load_state()
+    if state is None:
+        print(
+            f"WARN: не удалось прочитать/расшифровать state.json — {load_error}",
+            file=sys.stderr,
+        )
+        text = SETUP_MESSAGE
+        kind = "setup"
+    else:
+        text = morning_message(state) if args.mode == "morning" else evening_message(state)
+        kind = args.mode
+
     print(text)
     send_telegram(text)
-    print(f"OK: sent --mode {args.mode}", file=sys.stderr)
+    print(f"OK: sent --mode {args.mode} ({kind})", file=sys.stderr)
     return 0
 
 
@@ -283,5 +336,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:  # noqa: BLE001
-        print(f"ERROR: {exc}", file=sys.stderr)
+        msg = str(exc).strip() or repr(exc) or type(exc).__name__
+        print(f"ERROR: {msg}", file=sys.stderr)
         raise SystemExit(1)
