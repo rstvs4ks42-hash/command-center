@@ -263,6 +263,44 @@ def tasks_today(state: Dict[str, Any], today: date) -> List[Dict[str, Any]]:
     return out
 
 
+def calendar_events_on(state: Dict[str, Any], day: date) -> List[Dict[str, Any]]:
+    key = day.isoformat()
+    out = []
+    for ev in state.get("calendarEvents") or []:
+        if (ev.get("date") or "")[:10] == key:
+            out.append(ev)
+    out.sort(key=lambda x: (x.get("title") or "").lower())
+    return out
+
+
+def calendar_blocks(state: Dict[str, Any], today: date) -> List[str]:
+    """Блоки «сегодня» и «завтра» для ntfy."""
+    lines: List[str] = []
+    today_ev = calendar_events_on(state, today)
+    if today_ev:
+        lines.append("")
+        lines.append("📅 Важные даты на сегодня")
+        for ev in today_ev:
+            title = ev.get("title") or "Событие"
+            note = (ev.get("note") or "").strip()
+            lines.append(f"• {title}")
+            if note:
+                lines.append(f"  {note}")
+
+    tomorrow = today + timedelta(days=1)
+    tomorrow_ev = calendar_events_on(state, tomorrow)
+    if tomorrow_ev:
+        lines.append("")
+        lines.append("⏳ Напоминание на завтра")
+        for ev in tomorrow_ev:
+            title = ev.get("title") or "Событие"
+            note = (ev.get("note") or "").strip()
+            lines.append(f"• {title}")
+            if note:
+                lines.append(f"  {note}")
+    return lines
+
+
 def morning_message(state: Dict[str, Any]) -> str:
     today = today_cn()
     lines = [
@@ -299,6 +337,8 @@ def morning_message(state: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("💳 Продления ≤ 3 дней")
         lines.extend(warns)
+
+    lines.extend(calendar_blocks(state, today))
 
     streak = (state.get("streak") or {}).get("current") or 0
     lines.append("")
@@ -350,6 +390,8 @@ def evening_message(state: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("💳 Не забудь про подписки:")
         lines.extend(warns)
+
+    lines.extend(calendar_blocks(state, today))
 
     if open_habits:
         lines.append("")

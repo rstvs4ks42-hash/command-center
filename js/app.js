@@ -31,6 +31,15 @@
   let calMonth = null; // Date at month start
   let selectedCalDay = null;
   let editingVideoId = null;
+  let editingEventId = null;
+
+  const EVENT_COLORS = [
+    { id: "blue", label: "Синий", hex: "#5b8cff" },
+    { id: "green", label: "Зелёный", hex: "#3ecf8e" },
+    { id: "amber", label: "Янтарный", hex: "#f5a524" },
+    { id: "red", label: "Красный", hex: "#ff6b6b" },
+    { id: "violet", label: "Фиолетовый", hex: "#a78bfa" },
+  ];
 
   function toast(msg) {
     const el = $("#toast");
@@ -335,9 +344,192 @@
   function closeModal() {
     $("#modal").classList.remove("open");
     editingVideoId = null;
+    editingEventId = null;
   }
 
   /* Calendar */
+  function colorHex(id) {
+    return EVENT_COLORS.find((c) => c.id === id)?.hex || EVENT_COLORS[0].hex;
+  }
+
+  function dayMarks(s) {
+    const marks = {};
+    (s.videos || []).forEach((v) => {
+      if (!v.publishDate) return;
+      if (!marks[v.publishDate]) marks[v.publishDate] = { videos: [], events: [] };
+      marks[v.publishDate].videos.push(v);
+    });
+    (s.calendarEvents || []).forEach((ev) => {
+      if (!ev.date) return;
+      if (!marks[ev.date]) marks[ev.date] = { videos: [], events: [] };
+      marks[ev.date].events.push(ev);
+    });
+    return marks;
+  }
+
+  function renderDayPanel(day, marks) {
+    const root = $("#cal-events");
+    if (!day) {
+      root.innerHTML = `<div class="empty">Выберите дату в календаре</div>`;
+      return;
+    }
+    const bucket = marks[day] || { videos: [], events: [] };
+    const videosHtml = bucket.videos
+      .map(
+        (v) => `
+      <div class="cal-item cal-item-video">
+        <div>
+          <div class="cal-item-title">▶ ${esc(v.title)}</div>
+          <div class="muted">Публикация ролика</div>
+        </div>
+        <button type="button" class="btn btn-sm" data-open-video="${v.id}">Открыть</button>
+      </div>`
+      )
+      .join("");
+
+    const eventsHtml = bucket.events
+      .map(
+        (ev) => `
+      <div class="cal-item" style="border-left:3px solid ${colorHex(ev.color)}">
+        <div class="grow">
+          <div class="cal-item-title">${esc(ev.title)}</div>
+          ${ev.note ? `<div class="cal-item-note">${esc(ev.note)}</div>` : ""}
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn btn-sm" data-edit-event="${ev.id}">Изменить</button>
+          <button type="button" class="btn btn-sm btn-danger" data-del-event="${ev.id}">Удалить</button>
+        </div>
+      </div>`
+      )
+      .join("");
+
+    const empty =
+      !bucket.videos.length && !bucket.events.length
+        ? `<div class="empty">Нет событий и публикаций на ${day}</div>`
+        : "";
+
+    root.innerHTML = `
+      <div class="cal-day-panel">
+        <div class="block-head" style="margin-bottom:10px">
+          <h3 style="margin:0;font-size:14px">День ${day}</h3>
+          <span class="chip">${bucket.events.length + bucket.videos.length} записей</span>
+        </div>
+        ${empty}
+        ${eventsHtml}
+        ${videosHtml}
+        <button type="button" class="btn btn-primary btn-add-event" id="btn-add-cal-event">+ Добавить событие на эту дату</button>
+      </div>`;
+
+    $$("#cal-events [data-open-video]").forEach((b) => {
+      b.onclick = () => openVideoModal(b.dataset.openVideo);
+    });
+    $$("#cal-events [data-edit-event]").forEach((b) => {
+      b.onclick = () => openEventModal(b.dataset.editEvent, day);
+    });
+    $$("#cal-events [data-del-event]").forEach((b) => {
+      b.onclick = () => {
+        if (!confirm("Удалить событие?")) return;
+        updateState((st) => {
+          st.calendarEvents = (st.calendarEvents || []).filter((x) => x.id !== b.dataset.delEvent);
+        });
+        toast("Событие удалено");
+      };
+    });
+    const addBtn = $("#btn-add-cal-event");
+    if (addBtn) {
+      addBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openEventModal(null, day);
+      };
+    }
+  }
+
+  function openEventModal(id, day) {
+    const s = getState();
+    const ev = id ? (s.calendarEvents || []).find((x) => x.id === id) : null;
+    editingEventId = id || null;
+    const dateVal = ev?.date || day || selectedCalDay || todayISO();
+    const color = ev?.color || "blue";
+    $("#modal-title").textContent = ev ? "Редактировать событие" : "Новое событие";
+    $("#modal-body").innerHTML = `
+      <div class="form-grid">
+        <div class="field">
+          <label>Дата</label>
+          <input type="date" id="ev-date" value="${esc(dateVal)}">
+        </div>
+        <div class="field">
+          <label>Заголовок</label>
+          <input id="ev-title" value="${esc(ev?.title || "")}" placeholder="Дедлайн / встреча / напоминание" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>Заметка / текст</label>
+          <textarea id="ev-note" placeholder="Подробности, чек-лист, ссылки…">${esc(ev?.note || "")}</textarea>
+        </div>
+        <div class="field">
+          <label>Цветная метка</label>
+          <div class="color-picks" id="ev-colors">
+            ${EVENT_COLORS.map(
+              (c) => `
+              <button type="button" class="color-pick ${c.id === color ? "active" : ""}" data-color="${c.id}" style="--c:${c.hex}" title="${esc(c.label)}" aria-label="${esc(c.label)}"></button>`
+            ).join("")}
+          </div>
+          <input type="hidden" id="ev-color" value="${esc(color)}">
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn btn-primary" id="ev-save">Сохранить</button>
+          ${ev ? `<button type="button" class="btn btn-danger" id="ev-del">Удалить</button>` : ""}
+          <button type="button" class="btn btn-ghost" id="ev-cancel">Отмена</button>
+        </div>
+      </div>`;
+    $("#modal").classList.add("open");
+
+    $$("#ev-colors .color-pick").forEach((btn) => {
+      btn.onclick = () => {
+        $$("#ev-colors .color-pick").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        $("#ev-color").value = btn.dataset.color;
+      };
+    });
+    $("#ev-cancel").onclick = closeModal;
+    $("#ev-save").onclick = () => {
+      const title = $("#ev-title").value.trim();
+      const note = $("#ev-note").value.trim();
+      const date = $("#ev-date").value;
+      const col = $("#ev-color").value || "blue";
+      if (!title) return toast("Укажите заголовок");
+      if (!date) return toast("Укажите дату");
+      updateState((st) => {
+        if (!st.calendarEvents) st.calendarEvents = [];
+        if (editingEventId) {
+          const cur = st.calendarEvents.find((x) => x.id === editingEventId);
+          if (cur) Object.assign(cur, { title, note, date, color: col });
+        } else {
+          st.calendarEvents.push({
+            id: uid("cev"),
+            date,
+            title,
+            note,
+            color: col,
+          });
+        }
+      });
+      selectedCalDay = date;
+      closeModal();
+      toast("Событие сохранено");
+    };
+    if (ev) {
+      $("#ev-del").onclick = () => {
+        if (!confirm("Удалить событие?")) return;
+        updateState((st) => {
+          st.calendarEvents = (st.calendarEvents || []).filter((x) => x.id !== editingEventId);
+        });
+        closeModal();
+        toast("Удалено");
+      };
+    }
+  }
+
   function renderCalendar() {
     const s = getState();
     if (!calMonth) {
@@ -345,6 +537,8 @@
       calMonth = new Date(t + "T00:00:00");
       calMonth.setDate(1);
     }
+    if (!selectedCalDay) selectedCalDay = todayISO();
+
     const year = calMonth.getFullYear();
     const month = calMonth.getMonth();
     const monthNames = [
@@ -356,51 +550,38 @@
     const firstDow = (new Date(year, month, 1).getDay() + 6) % 7; // Mon=0
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const today = todayISO();
-    const events = {};
-    s.videos.forEach((v) => {
-      if (v.publishDate) {
-        if (!events[v.publishDate]) events[v.publishDate] = [];
-        events[v.publishDate].push(v);
-      }
-    });
+    const marks = dayMarks(s);
 
     let html = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
       .map((d) => `<div class="cal-dow">${d}</div>`)
       .join("");
 
-    for (let i = 0; i < firstDow; i++) html += `<button class="cal-day muted" disabled></button>`;
+    for (let i = 0; i < firstDow; i++) html += `<button type="button" class="cal-day muted" disabled></button>`;
     for (let d = 1; d <= daysInMonth; d++) {
       const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      const has = marks[iso] && (marks[iso].videos.length || marks[iso].events.length);
       const cls = [
         "cal-day",
         iso === today ? "today" : "",
-        events[iso] ? "has-event" : "",
+        has ? "has-event" : "",
+        marks[iso]?.events?.length ? "has-note" : "",
         selectedCalDay === iso ? "selected" : "",
       ]
         .filter(Boolean)
         .join(" ");
-      html += `<button class="${cls}" data-day="${iso}">${d}</button>`;
+      html += `<button type="button" class="${cls}" data-day="${iso}" aria-label="${iso}">${d}</button>`;
     }
     $("#calendar").innerHTML = html;
 
     $$("#calendar .cal-day[data-day]").forEach((btn) => {
-      btn.onclick = () => {
+      btn.onclick = (e) => {
+        e.preventDefault();
         selectedCalDay = btn.dataset.day;
         renderCalendar();
-        const list = events[selectedCalDay] || [];
-        $("#cal-events").innerHTML = list.length
-          ? list
-              .map(
-                (v) =>
-                  `<div class="list-row"><span>${esc(v.title)}</span><button class="btn btn-sm" data-open="${v.id}">Открыть</button></div>`
-              )
-              .join("")
-          : `<div class="empty">Нет публикаций на ${selectedCalDay}</div>`;
-        $$("#cal-events [data-open]").forEach((b) => {
-          b.onclick = () => openVideoModal(b.dataset.open);
-        });
       };
     });
+
+    renderDayPanel(selectedCalDay, marks);
   }
 
   /* ===================== FOCUS ===================== */

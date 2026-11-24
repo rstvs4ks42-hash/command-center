@@ -539,6 +539,8 @@ a {
   font-size: 12px;
   font-weight: 550;
   position: relative;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .cal-day.muted { opacity: 0.35; }
@@ -546,21 +548,100 @@ a {
   border-color: rgba(91, 140, 255, 0.5);
   color: var(--text);
 }
+.cal-day.has-event {
+  border-color: rgba(110, 231, 183, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.2);
+}
 .cal-day.has-event::after {
   content: "";
   position: absolute;
-  bottom: 4px;
+  bottom: 5px;
   left: 50%;
   transform: translateX(-50%);
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent-2);
+  box-shadow: 0 0 8px rgba(110, 231, 183, 0.7);
+}
+.cal-day.has-note::after {
+  background: #f5a524;
+  box-shadow: 0 0 8px rgba(245, 165, 36, 0.7);
+}
+.cal-day.has-event.has-note::after {
+  background: linear-gradient(90deg, var(--accent-2), #f5a524);
 }
 
 .cal-day.selected {
   background: var(--accent-soft);
   color: var(--text);
+  border-color: rgba(91, 140, 255, 0.75);
+}
+
+.cal-day-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.cal-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.cal-item .grow { flex: 1; min-width: 0; }
+
+.cal-item-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.cal-item-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cal-item-video {
+  border-left: 3px solid var(--accent);
+}
+
+.btn-add-event {
+  width: 100%;
+  min-height: 48px;
+  font-size: 15px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.color-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.color-pick {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--c);
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.25);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.color-pick.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35), inset 0 0 0 2px rgba(0, 0, 0, 0.2);
 }
 
 /* Habits / streak */

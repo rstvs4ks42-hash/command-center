@@ -43,6 +43,7 @@ const DEFAULT_STATE = {
   habitLogs: {},
   streak: { current: 0, best: 0, lastCompleteDate: null },
   tasks: [],
+  calendarEvents: [],
   budget: { exchangeRate: 7.2, expenses: [], income: [] },
   subscriptions: [
     {
@@ -292,6 +293,7 @@ function ensureDefaults() {
   if (!state.habits) state.habits = JSON.parse(JSON.stringify(DEFAULT_STATE.habits));
   if (!state.videos) state.videos = [];
   if (!state.tasks) state.tasks = [];
+  if (!Array.isArray(state.calendarEvents)) state.calendarEvents = [];
   if (!state.prompts) state.prompts = JSON.parse(JSON.stringify(DEFAULT_STATE.prompts));
   if (!state.subscriptions) state.subscriptions = [];
   if (!state.monetization) {
