@@ -3,10 +3,14 @@
     STAGES,
     STAGE_CHECK,
     BUDGET_CATEGORIES,
+    WEEKDAY_KEYS,
+    WEEKDAY_LABELS,
     uid,
     todayISO,
     daysUntil,
     scheduleNtfyReminder,
+    weekdayKeyFromISO,
+    normalizeTimeHHMM,
     getState,
     loadVaultMeta,
     unlockWithPassword,
@@ -32,7 +36,10 @@
   let focusTimer = null;
   let focusLeftSec = 0;
   let focusTotalSec = 0;
+  let focusWidgetTick = null;
   let promptQuery = "";
+  let selectedWeekDay = null;
+  let weekEditorOpen = false;
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -827,6 +834,27 @@
     return habits.every((h) => habitDoneToday(h.id));
   }
 
+  function shiftISODate(iso, deltaDays) {
+    const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() + deltaDays);
+    return dt.toISOString().slice(0, 10);
+  }
+
+  function shanghaiNowMinutes() {
+    const now = new Date();
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    const local = new Date(utc + 8 * 3600000);
+    return local.getHours() * 60 + local.getMinutes();
+  }
+
+  function timeToMinutes(hhmm) {
+    const tm = normalizeTimeHHMM(hhmm);
+    if (!tm) return null;
+    const [h, m] = tm.split(":").map(Number);
+    return h * 60 + m;
+  }
+
   function recalcStreak() {
     updateState((st) => {
       const today = todayISO();
@@ -838,11 +866,7 @@
         if (st.streak.lastCompleteDate === today) {
           /* already counted */
         } else {
-          const yesterday = (() => {
-            const d = new Date(today + "T00:00:00");
-            d.setDate(d.getDate() - 1);
-            return d.toISOString().slice(0, 10);
-          })();
+          const yesterday = shiftISODate(today, -1);
           if (st.streak.lastCompleteDate === yesterday) {
             st.streak.current += 1;
           } else {
@@ -852,12 +876,7 @@
           st.streak.best = Math.max(st.streak.best || 0, st.streak.current);
         }
       } else if (st.streak.lastCompleteDate === today) {
-        // unchecked — undo today's completion
-        const yesterday = (() => {
-          const d = new Date(today + "T00:00:00");
-          d.setDate(d.getDate() - 1);
-          return d.toISOString().slice(0, 10);
-        })();
+        const yesterday = shiftISODate(today, -1);
         st.streak.lastCompleteDate = st.streak.current > 1 ? yesterday : null;
         st.streak.current = Math.max(0, st.streak.current - 1);
       }
@@ -892,6 +911,388 @@
     } catch (_) {
       /* ignore */
     }
+  }
+
+  function dayProductivity(s) {
+    const today = todayISO();
+    const tasks = (s.dailyTasks || []).filter((t) => t.date === today);
+    const habits = (s.habits || []).filter((h) => !h.archived);
+    const total = tasks.length + habits.length;
+    if (!total) return { pct: 0, done: 0, total: 0 };
+    const done =
+      tasks.filter((t) => t.done).length + habits.filter((h) => habitDoneToday(h.id)).length;
+    return { pct: Math.round((done / total) * 100), done, total };
+  }
+
+  function nextScheduledItem(s) {
+    const today = todayISO();
+    const nowMin = shanghaiNowMinutes();
+    const items = [];
+    (s.dailyTasks || []).forEach((t) => {
+      if (t.date !== today || t.done || !t.time) return;
+      const mins = timeToMinutes(t.time);
+      if (mins == null) return;
+      items.push({ title: t.title, time: t.time, mins, kind: "task" });
+    });
+    (s.habits || []).forEach((h) => {
+      if (h.archived || !h.time || habitDoneToday(h.id)) return;
+      const mins = timeToMinutes(h.time);
+      if (mins == null) return;
+      items.push({ title: h.name, time: h.time, mins, kind: "habit" });
+    });
+    items.sort((a, b) => a.mins - b.mins);
+    const upcoming = items.find((i) => i.mins >= nowMin);
+    return upcoming || null;
+  }
+
+  function ensureFocusWidgetTick() {
+    if (focusWidgetTick) return;
+    focusWidgetTick = setInterval(() => {
+      if (!$("#panel-focus")?.classList.contains("active")) return;
+      if (!isUnlocked()) return;
+      renderFocusWidgetsOnly();
+    }, 30000);
+  }
+
+  function renderFocusWidgetsOnly() {
+    const el = $("#focus-widgets");
+    if (!el || !isUnlocked()) return;
+    const s = getState();
+    const next = nextScheduledItem(s);
+    const prod = dayProductivity(s);
+    const nowMin = shanghaiNowMinutes();
+    let nextHtml = `<div class="muted">Нет дел с указанным временем</div>`;
+    if (next) {
+      const left = Math.max(0, next.mins - nowMin);
+      const hh = String(Math.floor(left / 60)).padStart(2, "0");
+      const mm = String(left % 60).padStart(2, "0");
+      nextHtml = `
+        <div class="value">⏰ ${esc(next.time)} — ${esc(next.title)}</div>
+        <div class="muted">Через ${left} мин (${hh}:${mm}) · ${next.kind === "habit" ? "привычка" : "план"}</div>`;
+    }
+    el.innerHTML = `
+      <div class="focus-widgets">
+        <div class="focus-widget">
+          <div class="label">⏱ Следующее по расписанию</div>
+          ${nextHtml}
+        </div>
+        <div class="focus-widget">
+          <div class="label">Продуктивность дня</div>
+          <div class="value">${prod.pct}%</div>
+          <div class="muted">${prod.done} / ${prod.total} пунктов</div>
+          <div class="prod-bar"><i style="width:${prod.pct}%"></i></div>
+        </div>
+      </div>`;
+  }
+
+  async function scheduleTaskReminders(tasks) {
+    const date = todayISO();
+    let scheduled = 0;
+    let noTopic = false;
+    for (const t of tasks) {
+      if (!t?.time || t.done) continue;
+      const r = await scheduleNtfyReminder({
+        kind: "task",
+        id: t.id,
+        title: t.title,
+        date: t.date || date,
+        time: t.time,
+      });
+      if (r.ok && r.reason === "scheduled") scheduled += 1;
+      if (r.reason === "no-topic") noTopic = true;
+    }
+    return { scheduled, noTopic };
+  }
+
+  async function scheduleTodayHabitReminders() {
+    const s = getState();
+    const today = todayISO();
+    let scheduled = 0;
+    let noTopic = false;
+    for (const h of (s.habits || []).filter((x) => !x.archived && x.time)) {
+      if (habitDoneToday(h.id)) continue;
+      const r = await scheduleNtfyReminder({
+        kind: "habit",
+        id: h.id,
+        title: h.name,
+        date: today,
+        time: h.time,
+      });
+      if (r.ok && r.reason === "scheduled") scheduled += 1;
+      if (r.reason === "no-topic") noTopic = true;
+    }
+    return { scheduled, noTopic };
+  }
+
+  async function applyWeeklyScheduleToToday({ force = false } = {}) {
+    const today = todayISO();
+    const key = weekdayKeyFromISO(today);
+    const created = [];
+    updateState((st) => {
+      if (!st.weeklySchedule) st.weeklySchedule = {};
+      WEEKDAY_KEYS.forEach((k) => {
+        if (!Array.isArray(st.weeklySchedule[k])) st.weeklySchedule[k] = [];
+      });
+      if (!st.dailyTasks) st.dailyTasks = [];
+      const template = st.weeklySchedule[key] || [];
+      const existingToday = st.dailyTasks.filter((t) => t.date === today);
+      if (!force && st.weeklyScheduleAppliedDate === today) return;
+      if (!force && existingToday.length > 0) {
+        st.weeklyScheduleAppliedDate = today;
+        return;
+      }
+      template.forEach((item) => {
+        const title = (item.title || "").trim();
+        if (!title) return;
+        const time = normalizeTimeHHMM(item.time);
+        const exists = st.dailyTasks.some(
+          (t) =>
+            t.date === today &&
+            t.title === title &&
+            (t.time || null) === time &&
+            !t.done
+        );
+        if (exists && !force) return;
+        if (
+          force &&
+          st.dailyTasks.some(
+            (t) => t.date === today && t.fromSchedule === item.id && !t.done
+          )
+        ) {
+          return;
+        }
+        const row = {
+          id: uid("dt"),
+          title,
+          time,
+          priority: item.priority === "high" ? "high" : "normal",
+          done: false,
+          date: today,
+          fromSchedule: item.id || null,
+        };
+        st.dailyTasks.push(row);
+        created.push(row);
+      });
+      st.weeklyScheduleAppliedDate = today;
+    });
+    const habitRes = await scheduleTodayHabitReminders();
+    if (created.length) {
+      const { scheduled, noTopic } = await scheduleTaskReminders(created);
+      if (force) {
+        if (noTopic || habitRes.noTopic) toast("Укажите ntfy topic в Настройках");
+        else if (scheduled || habitRes.scheduled)
+          toast(`Расписание: ${created.length}, пушей: ${scheduled + habitRes.scheduled}`);
+        else toast(`Загружено пунктов: ${created.length}`);
+      } else if (noTopic || habitRes.noTopic) {
+        toast("Укажите ntfy topic в Настройках");
+      }
+    } else if (force) {
+      toast("Шаблон пуст или уже в плане");
+    }
+    return created.length;
+  }
+
+  function renderWeekDaySwitcher() {
+    const todayKey = weekdayKeyFromISO(todayISO());
+    if (!selectedWeekDay || !WEEKDAY_KEYS.includes(selectedWeekDay)) {
+      selectedWeekDay = todayKey;
+    }
+    $("#week-days").innerHTML = WEEKDAY_KEYS.map((k) => {
+      const cls = [
+        "week-day-btn",
+        k === selectedWeekDay ? "active" : "",
+        k === todayKey ? "today-mark" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `<button type="button" class="${cls}" data-week-day="${k}">${WEEKDAY_LABELS[k]}</button>`;
+    }).join("");
+  }
+
+  function renderWeekScheduleEditor() {
+    const editor = $("#week-schedule-editor");
+    if (!editor) return;
+    editor.hidden = !weekEditorOpen;
+    if (!weekEditorOpen) return;
+    const s = getState();
+    const day = selectedWeekDay || weekdayKeyFromISO(todayISO());
+    const items = [...((s.weeklySchedule && s.weeklySchedule[day]) || [])];
+    items.sort((a, b) => (timeToMinutes(a.time) ?? 9999) - (timeToMinutes(b.time) ?? 9999));
+    const copyOptions = WEEKDAY_KEYS.filter((k) => k !== day)
+      .map((k) => `<option value="${k}">${WEEKDAY_LABELS[k]}</option>`)
+      .join("");
+
+    editor.innerHTML = `
+      <div class="muted" style="margin:0 0 8px">Шаблон: <strong>${WEEKDAY_LABELS[day]}</strong> · время Asia/Shanghai</div>
+      <div id="ws-list">
+        ${
+          items
+            .map(
+              (it) => `
+          <div class="ws-item">
+            <span class="muted">${it.time ? esc(it.time) : "—:—"}</span>
+            <div>
+              <div style="font-weight:600">${it.priority === "high" ? "🔥 " : ""}${esc(it.title)}</div>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-sm" data-ws-edit="${it.id}">✎</button>
+              <button type="button" class="btn btn-sm btn-ghost" data-ws-del="${it.id}">✕</button>
+            </div>
+          </div>`
+            )
+            .join("") || `<div class="empty">Нет пунктов на ${WEEKDAY_LABELS[day]}</div>`
+        }
+      </div>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="field"><input id="ws-new-title" placeholder="Напр. Уроки / YouTube / Турники" autocomplete="off"></div>
+        <div class="inline-fields">
+          <div class="field"><label>Время</label><input type="time" id="ws-new-time"></div>
+          <div class="field"><label>Приоритет</label>
+            <select id="ws-new-prio">
+              <option value="normal">⚡ Обычное</option>
+              <option value="high">🔥 Главное</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-ws-add">+ В шаблон ${WEEKDAY_LABELS[day]}</button>
+      </div>
+      <div class="inline-fields" style="margin-top:10px;align-items:end">
+        <div class="field">
+          <label>Копировать ${WEEKDAY_LABELS[day]} →</label>
+          <select id="ws-copy-to">${copyOptions}</select>
+        </div>
+        <button type="button" class="btn btn-sm" id="btn-ws-copy">Копировать день</button>
+      </div>`;
+
+    $("#btn-ws-add").onclick = () => {
+      const title = $("#ws-new-title").value.trim();
+      const time = normalizeTimeHHMM($("#ws-new-time").value);
+      const priority = $("#ws-new-prio").value === "high" ? "high" : "normal";
+      if (!title) return toast("Укажите название");
+      updateState((st) => {
+        if (!st.weeklySchedule[day]) st.weeklySchedule[day] = [];
+        st.weeklySchedule[day].push({ id: uid("ws"), title, time, priority });
+      });
+      $("#ws-new-title").value = "";
+      $("#ws-new-time").value = "";
+      toast("Пункт шаблона добавлен");
+    };
+
+    $("#btn-ws-copy").onclick = () => {
+      const to = $("#ws-copy-to").value;
+      if (!to || to === day) return;
+      updateState((st) => {
+        const src = JSON.parse(JSON.stringify(st.weeklySchedule[day] || []));
+        st.weeklySchedule[to] = src.map((x) => ({
+          ...x,
+          id: uid("ws"),
+        }));
+      });
+      toast(`Скопировано: ${WEEKDAY_LABELS[day]} → ${WEEKDAY_LABELS[to]}`);
+    };
+
+    $$("#ws-list [data-ws-del]").forEach((btn) => {
+      btn.onclick = () => {
+        updateState((st) => {
+          st.weeklySchedule[day] = (st.weeklySchedule[day] || []).filter(
+            (x) => x.id !== btn.dataset.wsDel
+          );
+        });
+      };
+    });
+
+    $$("#ws-list [data-ws-edit]").forEach((btn) => {
+      btn.onclick = () => openWeekItemModal(day, btn.dataset.wsEdit);
+    });
+  }
+
+  function openWeekItemModal(dayKey, itemId) {
+    const s = getState();
+    const item = (s.weeklySchedule?.[dayKey] || []).find((x) => x.id === itemId);
+    if (!item) return;
+    $("#modal-title").textContent = `Шаблон · ${WEEKDAY_LABELS[dayKey]}`;
+    $("#modal-body").innerHTML = `
+      <div class="form-grid">
+        <div class="field"><label>Дело</label><input id="ws-edit-title" value="${esc(item.title || "")}"></div>
+        <div class="inline-fields">
+          <div class="field"><label>Время HH:MM</label><input type="time" id="ws-edit-time" value="${item.time || ""}"></div>
+          <div class="field"><label>Приоритет</label>
+            <select id="ws-edit-prio">
+              <option value="normal" ${item.priority !== "high" ? "selected" : ""}>⚡ Обычное</option>
+              <option value="high" ${item.priority === "high" ? "selected" : ""}>🔥 Главное</option>
+            </select>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="ws-edit-save">Сохранить</button>
+          <button class="btn btn-ghost" id="ws-edit-cancel">Отмена</button>
+        </div>
+      </div>`;
+    $("#modal").classList.add("open");
+    $("#ws-edit-cancel").onclick = closeModal;
+    $("#ws-edit-save").onclick = () => {
+      const title = $("#ws-edit-title").value.trim();
+      if (!title) return toast("Укажите название");
+      updateState((st) => {
+        const cur = (st.weeklySchedule[dayKey] || []).find((x) => x.id === itemId);
+        if (!cur) return;
+        cur.title = title;
+        cur.time = normalizeTimeHHMM($("#ws-edit-time").value);
+        cur.priority = $("#ws-edit-prio").value === "high" ? "high" : "normal";
+      });
+      closeModal();
+      toast("Пункт шаблона обновлён");
+    };
+  }
+
+  function openTaskEditModal(taskId) {
+    const t = (getState().dailyTasks || []).find((x) => x.id === taskId);
+    if (!t) return;
+    $("#modal-title").textContent = "Редактировать задачу";
+    $("#modal-body").innerHTML = `
+      <div class="form-grid">
+        <div class="field"><label>Заголовок</label><input id="task-edit-title" value="${esc(t.title || "")}"></div>
+        <div class="inline-fields">
+          <div class="field"><label>Время HH:MM</label><input type="time" id="task-edit-time" value="${t.time || ""}"></div>
+          <div class="field"><label>Приоритет</label>
+            <select id="task-edit-prio">
+              <option value="normal" ${t.priority !== "high" ? "selected" : ""}>⚡ Обычное</option>
+              <option value="high" ${t.priority === "high" ? "selected" : ""}>🔥 Главное</option>
+            </select>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="task-edit-save">Сохранить</button>
+          <button class="btn btn-ghost" id="task-edit-cancel">Отмена</button>
+        </div>
+      </div>`;
+    $("#modal").classList.add("open");
+    $("#task-edit-cancel").onclick = closeModal;
+    $("#task-edit-save").onclick = async () => {
+      const title = $("#task-edit-title").value.trim() || t.title;
+      const tm = normalizeTimeHHMM($("#task-edit-time").value);
+      const priority = $("#task-edit-prio").value === "high" ? "high" : "normal";
+      updateState((st) => {
+        const cur = (st.dailyTasks || []).find((x) => x.id === taskId);
+        if (!cur) return;
+        cur.title = title;
+        cur.time = tm;
+        cur.priority = priority;
+      });
+      closeModal();
+      if (tm) {
+        const r = await scheduleNtfyReminder({
+          kind: "task",
+          id: taskId,
+          title,
+          date: t.date || todayISO(),
+          time: tm,
+        });
+        if (r.ok && r.reason === "scheduled") toast(`Пуш на ${tm}`);
+        else if (r.reason === "no-topic") toast("Укажите ntfy topic в Настройках");
+        else toast("Задача обновлена");
+      } else toast("Задача обновлена");
+    };
   }
 
   function renderFocusTimer() {
@@ -970,6 +1371,11 @@
     const pct = habits.length ? Math.round((doneCount / habits.length) * 100) : 0;
     const todayDone = allHabitsDoneToday();
 
+    // Автоподстановка шаблона при первом открытии дня
+    if (s.weeklyScheduleAppliedDate !== todayISO()) {
+      applyWeeklyScheduleToToday({ force: false });
+    }
+
     $("#streak-block").innerHTML = `
       <div class="streak-hero">
         <div class="streak-ring" style="--p:${pct}">
@@ -985,6 +1391,10 @@
       </div>
     `;
 
+    renderFocusWidgetsOnly();
+    ensureFocusWidgetTick();
+    renderWeekDaySwitcher();
+    renderWeekScheduleEditor();
     renderFocusTimer();
 
     $("#habit-list").innerHTML = habits
@@ -993,6 +1403,7 @@
       <div class="habit-item ${habitDoneToday(h.id) ? "done" : ""}">
         <input type="checkbox" data-habit="${h.id}" ${habitDoneToday(h.id) ? "checked" : ""}>
         <input class="habit-rename grow" data-rename="${h.id}" value="${esc(h.name)}">
+        <input type="time" class="habit-time" data-habit-time="${h.id}" value="${h.time || ""}" title="Время пуша HH:MM">
         <button type="button" class="btn btn-sm btn-ghost" data-del-habit="${h.id}" title="Удалить">✕</button>
       </div>`
       )
@@ -1001,7 +1412,14 @@
     const today = todayISO();
     const tasks = (s.dailyTasks || []).filter((t) => t.date === today);
     const prioOrder = { high: 0, normal: 1 };
-    tasks.sort((a, b) => (prioOrder[a.priority] ?? 9) - (prioOrder[b.priority] ?? 9));
+    tasks.sort((a, b) => {
+      const ta = timeToMinutes(a.time);
+      const tb = timeToMinutes(b.time);
+      if (ta != null && tb != null && ta !== tb) return ta - tb;
+      if (ta != null && tb == null) return -1;
+      if (ta == null && tb != null) return 1;
+      return (prioOrder[a.priority] ?? 9) - (prioOrder[b.priority] ?? 9);
+    });
 
     $("#task-list").innerHTML = tasks
       .map(
@@ -1019,30 +1437,75 @@
         </div>
       </div>`
       )
-      .join("") || `<div class="empty">План на сегодня пуст</div>`;
+      .join("") || `<div class="empty">План на сегодня пуст — загрузите шаблон недели</div>`;
   }
 
   function bindFocus() {
-    $("#habit-list").addEventListener("change", (e) => {
-      const t = e.target;
-      if (!t.matches("[data-habit]")) return;
-      const today = todayISO();
-      updateState((st) => {
-        if (!st.habitLogs[today]) st.habitLogs[today] = {};
-        st.habitLogs[today][t.dataset.habit] = t.checked;
-      });
-      recalcStreak();
+    $("#week-days").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-week-day]");
+      if (!btn) return;
+      selectedWeekDay = btn.dataset.weekDay;
+      weekEditorOpen = true;
+      renderWeekDaySwitcher();
+      renderWeekScheduleEditor();
     });
 
-    $("#habit-list").addEventListener("change", (e) => {
-      const inp = e.target.closest("[data-rename]");
-      if (!inp) return;
-      const name = inp.value.trim();
-      if (!name) return;
-      updateState((st) => {
-        const h = st.habits.find((x) => x.id === inp.dataset.rename);
-        if (h) h.name = name;
-      });
+    $("#btn-week-setup").onclick = () => {
+      weekEditorOpen = !weekEditorOpen;
+      if (!selectedWeekDay) selectedWeekDay = weekdayKeyFromISO(todayISO());
+      renderWeekScheduleEditor();
+      if (weekEditorOpen) {
+        $("#week-schedule-block")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    };
+
+    $("#btn-load-schedule").onclick = async () => {
+      await applyWeeklyScheduleToToday({ force: true });
+    };
+
+    $("#habit-list").addEventListener("change", async (e) => {
+      const t = e.target;
+      if (t.matches("[data-habit]")) {
+        const today = todayISO();
+        updateState((st) => {
+          if (!st.habitLogs[today]) st.habitLogs[today] = {};
+          st.habitLogs[today][t.dataset.habit] = t.checked;
+        });
+        recalcStreak();
+        return;
+      }
+      if (t.matches("[data-rename]")) {
+        const name = t.value.trim();
+        if (!name) return;
+        updateState((st) => {
+          const h = st.habits.find((x) => x.id === t.dataset.rename);
+          if (h) h.name = name;
+        });
+        return;
+      }
+      if (t.matches("[data-habit-time]")) {
+        const id = t.dataset.habitTime;
+        const tm = normalizeTimeHHMM(t.value);
+        let habitName = "";
+        updateState((st) => {
+          const h = st.habits.find((x) => x.id === id);
+          if (h) {
+            h.time = tm;
+            habitName = h.name;
+          }
+        });
+        if (tm && habitName) {
+          const r = await scheduleNtfyReminder({
+            kind: "habit",
+            id,
+            title: habitName,
+            date: todayISO(),
+            time: tm,
+          });
+          if (r.ok && r.reason === "scheduled") toast(`Пуш привычки на ${tm}`);
+          else if (r.reason === "no-topic") toast("Укажите ntfy topic в Настройках");
+        }
+      }
     });
 
     $("#habit-list").addEventListener("click", (e) => {
@@ -1054,20 +1517,34 @@
       toast("Привычка удалена");
     });
 
-    $("#btn-add-habit").onclick = () => {
+    $("#btn-add-habit").onclick = async () => {
       const name = $("#new-habit").value.trim();
       if (!name) return;
+      const time = normalizeTimeHHMM($("#new-habit-time")?.value);
+      const id = uid("hab");
       updateState((st) => {
-        st.habits.push({ id: uid("hab"), name, archived: false });
+        st.habits.push({ id, name, archived: false, time });
       });
       $("#new-habit").value = "";
-      toast("Привычка добавлена");
+      if ($("#new-habit-time")) $("#new-habit-time").value = "";
+      if (time) {
+        const r = await scheduleNtfyReminder({
+          kind: "habit",
+          id,
+          title: name,
+          date: todayISO(),
+          time,
+        });
+        if (r.ok && r.reason === "scheduled") toast(`Привычка + пуш ${time}`);
+        else if (r.reason === "no-topic") toast("Укажите ntfy topic в Настройках");
+        else toast("Привычка добавлена");
+      } else toast("Привычка добавлена");
     };
 
     $("#btn-add-task").onclick = async () => {
       const title = $("#new-task").value.trim();
       const priority = $("#new-task-prio").value === "high" ? "high" : "normal";
-      const time = ($("#new-task-time").value || "").slice(0, 5) || null;
+      const time = normalizeTimeHHMM($("#new-task-time").value);
       if (!title) return;
       const id = uid("dt");
       const date = todayISO();
@@ -1085,17 +1562,27 @@
       toast("В плане");
     };
 
-    $("#btn-carry-tasks").onclick = () => {
+    $("#btn-carry-tasks").onclick = async () => {
       const today = todayISO();
+      const yesterday = shiftISODate(today, -1);
+      const moved = [];
       updateState((st) => {
         (st.dailyTasks || []).forEach((t) => {
-          if (!t.done && t.date !== today) t.date = today;
+          if (!t.done && t.date === yesterday) {
+            t.date = today;
+            moved.push(t);
+          }
         });
       });
-      toast("Невыполненное перенесено на сегодня");
+      if (moved.length) {
+        await scheduleTaskReminders(moved);
+        toast(`Перенесено со вчера: ${moved.length}`);
+      } else {
+        toast("Со вчера невыполненных нет");
+      }
     };
 
-    $("#task-list").addEventListener("click", async (e) => {
+    $("#task-list").addEventListener("click", (e) => {
       const toggle = e.target.closest("[data-toggle-task]");
       const del = e.target.closest("[data-del-task]");
       const edit = e.target.closest("[data-edit-task]");
@@ -1110,34 +1597,7 @@
           st.dailyTasks = (st.dailyTasks || []).filter((x) => x.id !== del.dataset.delTask);
         });
       }
-      if (edit) {
-        const t = (getState().dailyTasks || []).find((x) => x.id === edit.dataset.editTask);
-        if (!t) return;
-        const title = prompt("Заголовок задачи", t.title);
-        if (title == null) return;
-        const time = prompt("Время HH:MM (пусто = без напоминания)", t.time || "");
-        if (time == null) return;
-        const prio = confirm("Главный приоритет? OK = 🔥, Отмена = ⚡") ? "high" : "normal";
-        const tm = (time || "").trim().slice(0, 5) || null;
-        updateState((st) => {
-          const cur = (st.dailyTasks || []).find((x) => x.id === t.id);
-          if (cur) {
-            cur.title = title.trim() || cur.title;
-            cur.time = tm;
-            cur.priority = prio;
-          }
-        });
-        if (tm) {
-          await scheduleNtfyReminder({
-            kind: "task",
-            id: t.id,
-            title: title.trim() || t.title,
-            date: t.date || todayISO(),
-            time: tm,
-          });
-        }
-        toast("Задача обновлена");
-      }
+      if (edit) openTaskEditModal(edit.dataset.editTask);
     });
   }
 

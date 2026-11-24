@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
@@ -49,10 +50,21 @@ def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 try:
-    from crypto_util import load_and_decrypt
+    from crypto_util import encrypt_state, is_envelope, load_and_decrypt
 except ImportError:  # pragma: no cover
     print("Установите зависимости: pip install -r bot/requirements.txt", file=sys.stderr)
     sys.exit(1)
+
+WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+WEEKDAY_LABELS = {
+    "mon": "Пн",
+    "tue": "Вт",
+    "wed": "Ср",
+    "thu": "Чт",
+    "fri": "Пт",
+    "sat": "Сб",
+    "sun": "Вс",
+}
 
 NTFY_BASE = "https://ntfy.sh"
 NTFY_TIMEOUT = 30
@@ -130,28 +142,41 @@ def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]
     return (d - today).days
 
 
-def send_ntfy(text: str) -> None:
+def _post_ntfy(
+    text: str,
+    *,
+    title: str = "YouTube Command Center",
+    tags: str = "rocket",
+    at: Optional[str] = None,
+    append_link: bool = True,
+) -> None:
     """POST https://ntfy.sh/{NTFY_TOPIC} с Click/Actions на сайт Command Center."""
     topic = require_ntfy_topic()
     url = f"{NTFY_BASE}/{topic}"
     url_safe = f"{NTFY_BASE}/***"
     print(f"ntfy endpoint: {NTFY_BASE}/{{NTFY_TOPIC}}", file=sys.stderr)
 
-    message = text.rstrip() + f"\n\n🔗 Открыть трекер: {NTFY_CLICK}"
+    message = text.rstrip()
+    if append_link:
+        message += f"\n\n🔗 Открыть трекер: {NTFY_CLICK}"
     body = message.encode("utf-8")
+    headers = {
+        "User-Agent": NTFY_USER_AGENT,
+        "Title": title,
+        "Priority": "default",
+        "Tags": tags,
+        "Click": NTFY_CLICK,
+        "Actions": f"view, Open App, {NTFY_CLICK}",
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    if at:
+        headers["At"] = at
+
     req = urllib.request.Request(
         url,
         data=body,
         method="POST",
-        headers={
-            "User-Agent": NTFY_USER_AGENT,
-            "Title": "YouTube Command Center",
-            "Priority": "default",
-            "Tags": "rocket",
-            "Click": NTFY_CLICK,
-            "Actions": f"view, Open App, {NTFY_CLICK}",
-            "Content-Type": "text/plain; charset=utf-8",
-        },
+        headers=headers,
     )
 
     try:
@@ -179,6 +204,178 @@ def send_ntfy(text: str) -> None:
         raise RuntimeError(f"ntfy expected HTTP 200, got status={status}, body[:300]={snippet}")
 
     print(f"OK: ntfy accepted message (status={status})", file=sys.stderr)
+
+
+def send_ntfy(text: str) -> None:
+    _post_ntfy(text)
+
+
+def normalize_time_hhmm(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    s = str(raw).strip()[:5]
+    if len(s) != 5 or s[2] != ":":
+        return None
+    try:
+        hh = int(s[:2])
+        mm = int(s[3:5])
+    except ValueError:
+        return None
+    if hh > 23 or mm > 59:
+        return None
+    return f"{hh:02d}:{mm:02d}"
+
+
+def shanghai_iso(date_str: str, time_str: str) -> str:
+    tm = normalize_time_hhmm(time_str) or "09:00"
+    return f"{date_str[:10]}T{tm}:00+08:00"
+
+
+def reminder_key(kind: str, item_id: str, date_str: str, time_str: str) -> str:
+    return f"{kind}:{item_id}:{date_str}:{time_str}"
+
+
+def weekday_key(day: date) -> str:
+    return WEEKDAY_KEYS[day.weekday()]
+
+
+def collect_timed_items_for_day(state: Dict[str, Any], day: date) -> List[Dict[str, str]]:
+    """Задачи дня (dailyTasks или weeklySchedule) + привычки с HH:MM."""
+    key = day.isoformat()
+    items: List[Dict[str, str]] = []
+
+    daily = [
+        t
+        for t in (state.get("dailyTasks") or [])
+        if (t.get("date") or "")[:10] == key and not t.get("done")
+    ]
+    if daily:
+        for t in daily:
+            tm = normalize_time_hhmm(t.get("time"))
+            if not tm:
+                continue
+            items.append(
+                {
+                    "kind": "task",
+                    "id": str(t.get("id") or f"task-{tm}-{t.get('title') or ''}"),
+                    "title": str(t.get("title") or "Задача"),
+                    "time": tm,
+                }
+            )
+    else:
+        wd = weekday_key(day)
+        for t in (state.get("weeklySchedule") or {}).get(wd) or []:
+            tm = normalize_time_hhmm(t.get("time"))
+            if not tm:
+                continue
+            items.append(
+                {
+                    "kind": "task",
+                    "id": str(t.get("id") or f"ws-{wd}-{tm}-{t.get('title') or ''}"),
+                    "title": str(t.get("title") or "Задача"),
+                    "time": tm,
+                }
+            )
+
+    logs = (state.get("habitLogs") or {}).get(key) or {}
+    for h in state.get("habits") or []:
+        if h.get("archived"):
+            continue
+        if logs.get(h.get("id")):
+            continue
+        tm = normalize_time_hhmm(h.get("time"))
+        if not tm:
+            continue
+        items.append(
+            {
+                "kind": "habit",
+                "id": str(h.get("id") or f"habit-{tm}"),
+                "title": str(h.get("name") or "Привычка"),
+                "time": tm,
+            }
+        )
+
+    items.sort(key=lambda x: (x["time"], x["title"]))
+    return items
+
+
+def schedule_day_reminders(state: Dict[str, Any]) -> int:
+    """Ставит отложенные пуши At: на весь день. Дедуп через sentReminderIds."""
+    today = today_cn()
+    date_str = today.isoformat()
+    wd = weekday_key(today)
+    print(
+        f"Scheduling reminders for {date_str} ({WEEKDAY_LABELS.get(wd, wd)})",
+        file=sys.stderr,
+    )
+
+    sent = state.setdefault("sentReminderIds", [])
+    if not isinstance(sent, list):
+        sent = []
+        state["sentReminderIds"] = sent
+
+    now = datetime.now(CN_TZ)
+    scheduled = 0
+    for item in collect_timed_items_for_day(state, today):
+        key = reminder_key(item["kind"], item["id"], date_str, item["time"])
+        if key in sent:
+            print(f"skip already scheduled: {key}", file=sys.stderr)
+            continue
+        at = shanghai_iso(date_str, item["time"])
+        at_dt = datetime.fromisoformat(at)
+        if at_dt <= now - timedelta(seconds=30):
+            print(f"skip past: {key}", file=sys.stderr)
+            continue
+        body = f"⏰ Пора ({item['time']}): {item['title']}"
+        try:
+            _post_ntfy(
+                body,
+                title="Command Center Reminder",
+                tags="alarm_clock",
+                at=at,
+                append_link=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN: failed to schedule {key}: {exc}", file=sys.stderr)
+            continue
+        sent.append(key)
+        scheduled += 1
+        print(f"scheduled {key} at {at}", file=sys.stderr)
+
+    if len(sent) > 400:
+        state["sentReminderIds"] = sent[-300:]
+
+    return scheduled
+
+
+def save_state(state: Dict[str, Any]) -> bool:
+    """Перезаписывает data/state.json (шифр тем же salt), возвращает True если записали."""
+    password = os.environ.get("APP_PASSWORD", "").strip()
+    if not STATE_PATH.exists():
+        return False
+    raw = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    if is_envelope(raw):
+        if not password:
+            print("WARN: APP_PASSWORD missing — cannot persist sentReminderIds", file=sys.stderr)
+            return False
+        envelope = encrypt_state(
+            state,
+            password,
+            existing_salt_b64=raw.get("salt"),
+            iterations=int(raw.get("iter") or 250000),
+        )
+        STATE_PATH.write_text(
+            json.dumps(envelope, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return True
+    if isinstance(raw, dict) and "monetization" in raw:
+        STATE_PATH.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return True
+    return False
 
 
 def monetization_block(state: Dict[str, Any]) -> str:
@@ -304,7 +501,7 @@ def calendar_blocks(state: Dict[str, Any], today: date) -> List[str]:
 
 
 def timed_tasks_block(state: Dict[str, Any], today: date) -> List[str]:
-    """Задачи dailyTasks с точным временем на сегодня — в утренний брифинг."""
+    """Задачи dailyTasks (или weeklySchedule) с точным временем — в утренний брифинг."""
     key = today.isoformat()
     tasks = []
     for t in state.get("dailyTasks") or state.get("tasks") or []:
@@ -312,24 +509,59 @@ def timed_tasks_block(state: Dict[str, Any], today: date) -> List[str]:
             continue
         if (t.get("date") or "")[:10] != key:
             continue
-        tm = (t.get("time") or "").strip()
+        tm = normalize_time_hhmm(t.get("time"))
         if not tm:
             continue
-        tasks.append(t)
+        tasks.append({"time": tm, "title": t.get("title") or "Задача", "priority": t.get("priority")})
+    if not tasks:
+        wd = weekday_key(today)
+        for t in (state.get("weeklySchedule") or {}).get(wd) or []:
+            tm = normalize_time_hhmm(t.get("time"))
+            if not tm:
+                continue
+            tasks.append(
+                {
+                    "time": tm,
+                    "title": t.get("title") or "Задача",
+                    "priority": t.get("priority"),
+                }
+            )
+    # привычки с временем (ещё не отмеченные)
+    logs = (state.get("habitLogs") or {}).get(key) or {}
+    for h in state.get("habits") or []:
+        if h.get("archived") or logs.get(h.get("id")):
+            continue
+        tm = normalize_time_hhmm(h.get("time"))
+        if not tm:
+            continue
+        tasks.append(
+            {
+                "time": tm,
+                "title": h.get("name") or "Привычка",
+                "priority": "habit",
+            }
+        )
+
     tasks.sort(key=lambda x: (x.get("time") or "99:99", x.get("title") or ""))
     if not tasks:
         return []
-    lines = ["", "⏰ Задачи с точным временем сегодня"]
+    lines = ["", "⏰ Напоминания с точным временем сегодня"]
     for t in tasks:
-        prio = "🔥" if t.get("priority") == "high" else "⚡"
+        if t.get("priority") == "habit":
+            prio = "💪"
+        elif t.get("priority") == "high":
+            prio = "🔥"
+        else:
+            prio = "⚡"
         lines.append(f"{prio} {t.get('time')} — {t.get('title') or 'Задача'}")
     return lines
 
 
 def morning_message(state: Dict[str, Any]) -> str:
     today = today_cn()
+    wd = weekday_key(today)
     lines = [
-        f"☀️ Утренний брифинг · {today.strftime('%d.%m.%Y')}",
+        f"☀️ Утренний брифинг · {today.strftime('%d.%m.%Y')} · {WEEKDAY_LABELS.get(wd, wd)}",
         "",
         monetization_block(state),
         "",
@@ -442,6 +674,7 @@ def main() -> int:
     require_ntfy_topic()
 
     state, load_error = try_load_state()
+    state_dirty = False
     if state is None:
         print(
             f"WARN: не удалось прочитать/расшифровать state.json — {load_error}",
@@ -450,11 +683,28 @@ def main() -> int:
         text = SETUP_MESSAGE
         kind = "setup"
     else:
-        text = morning_message(state) if args.mode == "morning" else evening_message(state)
+        if args.mode == "morning":
+            before = list(state.get("sentReminderIds") or [])
+            n = schedule_day_reminders(state)
+            after = list(state.get("sentReminderIds") or [])
+            state_dirty = before != after
+            print(f"OK: scheduled {n} delayed reminder(s)", file=sys.stderr)
+            text = morning_message(state)
+        else:
+            text = evening_message(state)
         kind = args.mode
 
     print(text)
     send_ntfy(text)
+    if state is not None and state_dirty:
+        if save_state(state):
+            print("OK: persisted sentReminderIds into data/state.json", file=sys.stderr)
+            # маркер для workflow commit step
+            Path(os.environ.get("GITHUB_WORKSPACE", ROOT)).joinpath(
+                ".cc_state_dirty"
+            ).write_text("1", encoding="utf-8")
+        else:
+            print("WARN: could not persist sentReminderIds", file=sys.stderr)
     print(f"OK: sent --mode {args.mode} ({kind}) via ntfy.sh", file=sys.stderr)
     return 0
 

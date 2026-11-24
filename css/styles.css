@@ -758,6 +758,98 @@ a {
   .tab-btn span.icon { font-size: 14px; }
 }
 
+/* Focus week schedule + widgets */
+.week-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.week-day-btn {
+  flex: 1 1 calc(14% - 6px);
+  min-width: 40px;
+  padding: 8px 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.week-day-btn.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-soft));
+}
+
+.week-day-btn.today-mark:not(.active) {
+  box-shadow: inset 0 -2px 0 var(--accent-2);
+}
+
+.focus-widgets {
+  display: grid;
+  gap: 10px;
+}
+
+.focus-widget {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.focus-widget .label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.focus-widget .value {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.prod-bar {
+  margin-top: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.prod-bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  border-radius: inherit;
+}
+
+.ws-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  margin-bottom: 6px;
+}
+
+.habit-time {
+  width: 96px;
+  max-width: 30vw;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
 /* Habits / streak */
 .streak-hero {
   display: flex;

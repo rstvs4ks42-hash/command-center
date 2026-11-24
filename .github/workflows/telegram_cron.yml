@@ -18,7 +18,7 @@ on:
           - evening
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   notify:
@@ -52,3 +52,21 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: python bot/notify.py --mode "${{ steps.mode.outputs.value }}"
+
+      - name: Persist reminder dedupe keys
+        if: steps.mode.outputs.value == 'morning'
+        shell: bash
+        run: |
+          if [ ! -f .cc_state_dirty ]; then
+            echo "No reminder-key changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/state.json
+          if git diff --cached --quiet; then
+            echo "state.json unchanged after schedule"
+            exit 0
+          fi
+          git commit -m "chore: schedule day reminders (sentReminderIds)"
+          git push

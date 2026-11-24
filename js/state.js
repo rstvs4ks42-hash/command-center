@@ -45,15 +45,25 @@ const DEFAULT_STATE = {
   },
   videos: [],
   habits: [
-    { id: "hab-001", name: "1 час работы над YouTube", archived: false },
-    { id: "hab-002", name: "Английский / Учёба", archived: false },
-    { id: "hab-003", name: "Спорт / Активность", archived: false },
-    { id: "hab-004", name: "Сон до 01:00", archived: false },
+    { id: "hab-001", name: "1 час работы над YouTube", archived: false, time: null },
+    { id: "hab-002", name: "Английский / Учёба", archived: false, time: null },
+    { id: "hab-003", name: "Спорт / Активность", archived: false, time: null },
+    { id: "hab-004", name: "Сон до 01:00", archived: false, time: "01:00" },
   ],
   habitLogs: {},
   streak: { current: 0, best: 0, lastCompleteDate: null },
   tasks: [],
   dailyTasks: [],
+  weeklySchedule: {
+    mon: [],
+    tue: [],
+    wed: [],
+    thu: [],
+    fri: [],
+    sat: [],
+    sun: [],
+  },
+  weeklyScheduleAppliedDate: null,
   calendarEvents: [],
   sentReminderIds: [],
   launchFund: {
@@ -189,6 +199,46 @@ function shanghaiIso(dateStr, timeStr) {
   return `${dateStr}T${t}:00+08:00`;
 }
 
+const WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const WEEKDAY_LABELS = {
+  mon: "Пн",
+  tue: "Вт",
+  wed: "Ср",
+  thu: "Чт",
+  fri: "Пт",
+  sat: "Сб",
+  sun: "Вс",
+};
+
+function emptyWeeklySchedule() {
+  return {
+    mon: [],
+    tue: [],
+    wed: [],
+    thu: [],
+    fri: [],
+    sat: [],
+    sun: [],
+  };
+}
+
+/** День недели для календарной даты YYYY-MM-DD (Пн–Вс), без зависимости от TZ браузера. */
+function weekdayKeyFromISO(dateStr) {
+  const iso = (dateStr || todayISO()).slice(0, 10);
+  const [y, m, d] = iso.split("-").map(Number);
+  const utcDay = new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay(); // 0=Sun
+  return WEEKDAY_KEYS[(utcDay + 6) % 7]; // mon=0 … sun=6
+}
+
+function normalizeTimeHHMM(raw) {
+  if (raw == null || raw === "") return null;
+  const s = String(raw).trim().slice(0, 5);
+  if (!/^\d{2}:\d{2}$/.test(s)) return null;
+  const [hh, mm] = s.split(":").map(Number);
+  if (hh > 23 || mm > 59) return null;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
 function reminderKey(kind, id, dateStr, timeStr) {
   return `${kind}:${id}:${dateStr}:${timeStr}`;
 }
@@ -199,25 +249,27 @@ function reminderKey(kind, id, dateStr, timeStr) {
  */
 async function scheduleNtfyReminder({ kind, id, title, date, time }) {
   if (!date || !time) return { ok: false, reason: "no-time" };
+  const tm = normalizeTimeHHMM(time);
+  if (!tm) return { ok: false, reason: "bad-time" };
   const topic = getNtfyTopic();
   if (!topic) return { ok: false, reason: "no-topic" };
 
-  const key = reminderKey(kind, id, date, time);
+  const key = reminderKey(kind, id, date, tm);
   if (!state.sentReminderIds) state.sentReminderIds = [];
   if (state.sentReminderIds.includes(key)) return { ok: true, reason: "already" };
 
-  const at = shanghaiIso(date, time);
+  const at = shanghaiIso(date, tm);
   const atMs = Date.parse(at);
   if (!Number.isFinite(atMs) || atMs <= Date.now() - 30_000) {
     return { ok: false, reason: "past" };
   }
 
-  const body = `⏰ Напоминание на ${time}: ${title || "Без названия"}`;
+  const body = `⏰ Пора (${tm}): ${title || "Без названия"}`;
   try {
     const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
       method: "POST",
       headers: {
-        Title: "YouTube Command Center",
+        Title: "Command Center Reminder",
         Priority: "default",
         Tags: "alarm_clock",
         At: at,
@@ -383,10 +435,31 @@ function ensureDefaults() {
   }
   if (!state.budget) state.budget = { exchangeRate: 7.2, expenses: [], income: [] };
   if (!state.habits) state.habits = JSON.parse(JSON.stringify(DEFAULT_STATE.habits));
+  else {
+    state.habits.forEach((h) => {
+      if (h.time === undefined) h.time = null;
+      else h.time = normalizeTimeHHMM(h.time);
+    });
+  }
   if (!state.videos) state.videos = [];
   if (!state.tasks) state.tasks = [];
   if (!Array.isArray(state.calendarEvents)) state.calendarEvents = [];
   if (!Array.isArray(state.sentReminderIds)) state.sentReminderIds = [];
+  if (!state.weeklySchedule || typeof state.weeklySchedule !== "object") {
+    state.weeklySchedule = emptyWeeklySchedule();
+  } else {
+    WEEKDAY_KEYS.forEach((k) => {
+      if (!Array.isArray(state.weeklySchedule[k])) state.weeklySchedule[k] = [];
+      state.weeklySchedule[k].forEach((item) => {
+        if (!item.id) item.id = uid("ws");
+        if (item.time === undefined) item.time = null;
+        else item.time = normalizeTimeHHMM(item.time);
+        if (!item.priority) item.priority = "normal";
+        if (item.priority === "medium" || item.priority === "low") item.priority = "normal";
+      });
+    });
+  }
+  if (state.weeklyScheduleAppliedDate === undefined) state.weeklyScheduleAppliedDate = null;
   if (!state.launchFund) {
     state.launchFund = JSON.parse(JSON.stringify(DEFAULT_STATE.launchFund));
   } else {
@@ -439,6 +512,7 @@ function ensureDefaults() {
   state.dailyTasks.forEach((t) => {
     if (t.priority === "medium" || t.priority === "low") t.priority = "normal";
     if (t.time === undefined) t.time = null;
+    else t.time = normalizeTimeHHMM(t.time);
   });
   state.calendarEvents.forEach((ev) => {
     if (ev.time === undefined) ev.time = null;
@@ -731,11 +805,16 @@ window.CC = {
   STAGES,
   STAGE_CHECK,
   BUDGET_CATEGORIES,
+  WEEKDAY_KEYS,
+  WEEKDAY_LABELS,
   DEFAULT_STATE,
   uid,
   todayISO,
   daysUntil,
   shanghaiIso,
+  weekdayKeyFromISO,
+  normalizeTimeHHMM,
+  emptyWeeklySchedule,
   scheduleNtfyReminder,
   getState,
   loadVaultMeta,

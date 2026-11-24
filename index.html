@@ -114,21 +114,27 @@
     <!-- 2. Focus -->
     <section class="panel" id="panel-focus">
       <h2 class="section-title">Фокус и дисциплина</h2>
-      <p class="section-sub">План дня, привычки, streak и таймер фокуса</p>
+      <p class="section-sub">Шаблон Пн–Вс, план дня, привычки и точные пуши HH:MM (Asia/Shanghai)</p>
 
       <div class="block" id="streak-block"></div>
+      <div class="block" id="focus-widgets"></div>
 
-      <div class="block">
+      <div class="block" id="week-schedule-block">
         <div class="block-head">
-          <h3>⏱ Таймер фокуса</h3>
+          <h3>📅 Шаблон недели</h3>
+          <button type="button" class="btn btn-sm" id="btn-week-setup">⚙️ Настроить шаблон недели</button>
         </div>
-        <div id="focus-timer"></div>
+        <div class="week-days" id="week-days" role="tablist" aria-label="Дни недели"></div>
+        <div id="week-schedule-editor" hidden></div>
       </div>
 
       <div class="block">
         <div class="block-head">
           <h3>📋 План на день</h3>
-          <button type="button" class="btn btn-sm" id="btn-carry-tasks">Перенести невыполненное на сегодня</button>
+        </div>
+        <div class="btn-row" style="margin-bottom:10px;flex-wrap:wrap">
+          <button type="button" class="btn btn-sm btn-primary" id="btn-load-schedule">⚡ Загрузить расписание на сегодня</button>
+          <button type="button" class="btn btn-sm" id="btn-carry-tasks">Перенести невыполненные задачи со вчера на сегодня</button>
         </div>
         <div id="task-list"></div>
         <div class="form-grid" style="margin-top:10px">
@@ -137,7 +143,7 @@
           </div>
           <div class="inline-fields">
             <div class="field">
-              <label>Время (нпк)</label>
+              <label>Время (HH:MM, Китай)</label>
               <input type="time" id="new-task-time">
             </div>
             <div class="field">
@@ -157,12 +163,23 @@
           <h3>Привычки</h3>
         </div>
         <div class="habit-list" id="habit-list"></div>
-        <div class="btn-row" style="margin-top:10px">
-          <div class="field" style="flex:1;min-width:160px">
+        <div class="btn-row" style="margin-top:10px;flex-wrap:wrap">
+          <div class="field" style="flex:1;min-width:140px">
             <input id="new-habit" placeholder="Новая привычка…" autocomplete="off">
+          </div>
+          <div class="field" style="width:120px">
+            <label>Время</label>
+            <input type="time" id="new-habit-time">
           </div>
           <button type="button" class="btn btn-primary" id="btn-add-habit">Добавить</button>
         </div>
+      </div>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>⏱ Таймер фокуса</h3>
+        </div>
+        <div id="focus-timer"></div>
       </div>
     </section>
 
