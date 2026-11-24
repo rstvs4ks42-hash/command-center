@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Telegram-уведомления для Personal & YouTube Command Center.
+Читает data/state.json и шлёт утренний брифинг или вечерний «умный пинок».
+
+Зависимости: только requests (stdlib urllib как fallback не нужен при наличии requests).
+Секреты: BOT_TOKEN, CHAT_ID (env / GitHub Secrets).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    print("Установите requests: pip install requests", file=sys.stderr)
+    sys.exit(1)
+
+# Время Китая (Нанкин) UTC+8
+CN_TZ = timezone(timedelta(hours=8))
+ROOT = Path(__file__).resolve().parents[1]
+STATE_PATH = ROOT / "data" / "state.json"
+
+
+def today_cn() -> date:
+    return datetime.now(CN_TZ).date()
+
+
+def load_state() -> Dict[str, Any]:
+    if not STATE_PATH.exists():
+        raise FileNotFoundError(f"Не найден {STATE_PATH}")
+    with STATE_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def parse_date(s: Optional[str]) -> Optional[date]:
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
+def days_until(d: Optional[date], today: Optional[date] = None) -> Optional[int]:
+    if d is None:
+        return None
+    today = today or today_cn()
+    return (d - today).days
+
+
+def send_telegram(text: str) -> None:
+    token = os.environ.get("BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("CHAT_ID", "").strip()
+    if not token or not chat_id:
+        raise RuntimeError("Нужны переменные окружения BOT_TOKEN и CHAT_ID")
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    resp = requests.post(url, json=payload, timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram API error {resp.status_code}: {resp.text}")
+
+
+def monetization_block(state: Dict[str, Any]) -> str:
+    m = state.get("monetization") or {}
+    subs = int(m.get("subscribers") or 0)
+    subs_goal = int(m.get("subscribersGoal") or 1000)
+    hours = float(m.get("watchHours") or 0)
+    hours_goal = float(m.get("watchHoursGoal") or 4000)
+    sub_left = max(0, subs_goal - subs)
+    hours_left = max(0.0, hours_goal - hours)
+    sub_pct = min(100.0, (subs / subs_goal * 100) if subs_goal else 0)
+    hours_pct = min(100.0, (hours / hours_goal * 100) if hours_goal else 0)
+    return (
+        f"📈 <b>Монетизация</b>\n"
+        f"Подписчики: {subs:,} / {subs_goal:,} ({sub_pct:.0f}%) — осталось {sub_left:,}\n"
+        f"Часы просмотра: {hours:,.0f} / {hours_goal:,.0f} ({hours_pct:.0f}%) — осталось {hours_left:,.0f} ч"
+    ).replace(",", " ")
+
+
+def videos_today(state: Dict[str, Any], today: date) -> List[Dict[str, Any]]:
+    """Ролики в работе: сначала с датой публикации = сегодня, затем остальные незавершённые."""
+    out = []
+    for v in state.get("videos") or []:
+        stage = v.get("stage")
+        if stage == "published":
+            continue
+        out.append(v)
+    out.sort(
+        key=lambda x: (
+            0 if parse_date(x.get("publishDate")) == today else 1,
+            parse_date(x.get("publishDate")) or date.max,
+            x.get("title") or "",
+        )
+    )
+    return out[:12]
+
+
+def stage_label(stage: str) -> str:
+    return {
+        "idea": "Идея",
+        "script": "Сценарий/Голос",
+        "images": "Картинки 即梦AI",
+        "edit": "Монтаж Remotion",
+        "published": "Опубликовано",
+    }.get(stage, stage or "?")
+
+
+def habits_status(state: Dict[str, Any], today: date) -> List[tuple]:
+    key = today.isoformat()
+    logs = (state.get("habitLogs") or {}).get(key) or {}
+    rows = []
+    for h in state.get("habits") or []:
+        if h.get("archived"):
+            continue
+        done = bool(logs.get(h.get("id")))
+        rows.append((h.get("name") or "Привычка", done))
+    return rows
+
+
+def subscription_warnings(state: Dict[str, Any], today: date, threshold: int = 3) -> List[str]:
+    warns = []
+    for sub in state.get("subscriptions") or []:
+        d = parse_date(sub.get("renewDate"))
+        left = days_until(d, today)
+        if left is None:
+            continue
+        if left <= threshold:
+            name = sub.get("name") or "Подписка"
+            if left < 0:
+                warns.append(f"⚠️ {name}: просрочено на {abs(left)} дн.!")
+            elif left == 0:
+                warns.append(f"🚨 {name}: платёж СЕГОДНЯ")
+            else:
+                warns.append(f"⏰ {name}: через {left} дн. ({sub.get('renewDate')})")
+    return warns
+
+
+def tasks_today(state: Dict[str, Any], today: date) -> List[Dict[str, Any]]:
+    key = today.isoformat()
+    out = []
+    for t in state.get("tasks") or []:
+        if t.get("date") == key or (not t.get("done") and not t.get("date")):
+            out.append(t)
+    return out
+
+
+def morning_message(state: Dict[str, Any]) -> str:
+    today = today_cn()
+    lines = [
+        f"☀️ <b>Утренний брифинг</b> · {today.strftime('%d.%m.%Y')}",
+        "",
+        monetization_block(state),
+        "",
+        "🎬 <b>Ролики в работе</b>",
+    ]
+    vids = videos_today(state, today)
+    if not vids:
+        lines.append("На сегодня активных роликов нет — самое время завести идею.")
+    else:
+        for v in vids:
+            fmt = "Shorts" if v.get("format") == "shorts" else "Long"
+            vir = v.get("virality", "—")
+            lines.append(
+                f"• {v.get('title') or 'Без названия'} "
+                f"[{stage_label(v.get('stage'))}] · {fmt} · 🔥{vir}%"
+            )
+
+    lines.append("")
+    lines.append("✅ <b>Привычки на сегодня</b>")
+    habits = habits_status(state, today)
+    if not habits:
+        lines.append("Список привычек пуст.")
+    else:
+        for name, done in habits:
+            mark = "☑️" if done else "⬜️"
+            lines.append(f"{mark} {name}")
+
+    warns = subscription_warnings(state, today, threshold=3)
+    if warns:
+        lines.append("")
+        lines.append("💳 <b>Продления ≤ 3 дней</b>")
+        lines.extend(warns)
+
+    streak = (state.get("streak") or {}).get("current") or 0
+    lines.append("")
+    lines.append(f"🔥 Текущая серия: <b>{streak}</b> дн. Удачного дня!")
+    return "\n".join(lines)
+
+
+def evening_message(state: Dict[str, Any]) -> str:
+    today = today_cn()
+    habits = habits_status(state, today)
+    open_habits = [n for n, done in habits if not done]
+    tasks = tasks_today(state, today)
+    open_tasks = [t for t in tasks if not t.get("done")]
+    streak = (state.get("streak") or {}).get("current") or 0
+    best = (state.get("streak") or {}).get("best") or 0
+
+    lines = [
+        f"🌙 <b>Вечерний умный пинок</b> · {today.strftime('%d.%m.%Y')}",
+        "",
+    ]
+
+    if not open_habits and habits:
+        lines.append("Отлично! Все привычки за сегодня закрыты. 💪")
+    elif open_habits:
+        lines.append("<b>Незакрытые привычки:</b>")
+        for n in open_habits:
+            lines.append(f"⬜️ {n}")
+        lines.append("")
+        lines.append(
+            f"Не сбивай серию: сейчас <b>{streak}</b> дн."
+            + (f" (рекорд {best})." if best else ".")
+        )
+        lines.append("Закрой остаток до полуночи по Китаю — завтра будет легче.")
+    else:
+        lines.append("Привычки не настроены. Добавь их во вкладке «Фокус».")
+
+    if open_tasks:
+        lines.append("")
+        lines.append("<b>Открытые задачи на сегодня:</b>")
+        for t in open_tasks[:8]:
+            prio = {"high": "🔴", "medium": "🟡", "low": "⚪"}.get(t.get("priority"), "•")
+            lines.append(f"{prio} {t.get('title') or 'Задача'}")
+    elif tasks:
+        lines.append("")
+        lines.append("Все быстрые задачи на сегодня выполнены. ✨")
+
+    warns = subscription_warnings(state, today, threshold=3)
+    if warns:
+        lines.append("")
+        lines.append("💳 Не забудь про подписки:")
+        lines.extend(warns)
+
+    if open_habits:
+        lines.append("")
+        lines.append("Ты ближе к монетизации, чем вчера. Один чекбокс — и серия жива.")
+    else:
+        lines.append("")
+        lines.append("Спокойной ночи. Завтра снова в конвейер. 🎬")
+
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Telegram notify for Command Center")
+    parser.add_argument(
+        "--mode",
+        choices=("morning", "evening"),
+        required=True,
+        help="morning = 10:00 CST, evening = 21:00 CST",
+    )
+    args = parser.parse_args()
+
+    state = load_state()
+    text = morning_message(state) if args.mode == "morning" else evening_message(state)
+    print(text)
+    send_telegram(text)
+    print(f"OK: sent --mode {args.mode}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:  # noqa: BLE001
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1)

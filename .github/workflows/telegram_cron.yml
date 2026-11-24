@@ -1,0 +1,54 @@
+name: Telegram Cron (Command Center)
+
+on:
+  schedule:
+    # 10:00 Нанкин (UTC+8) = 02:00 UTC
+    - cron: "0 2 * * *"
+    # 21:00 Нанкин (UTC+8) = 13:00 UTC
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Режим уведомления"
+        required: true
+        default: morning
+        type: choice
+        options:
+          - morning
+          - evening
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r bot/requirements.txt
+
+      - name: Resolve mode
+        id: mode
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 2 * * *" ]; then
+            echo "value=morning" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=evening" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python bot/notify.py --mode "${{ steps.mode.outputs.value }}"

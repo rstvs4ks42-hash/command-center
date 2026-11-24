@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0c0f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Personal & YouTube Command Center — конвейер роликов, привычки, бюджет и пуш в Telegram">
+  <title>Command Center</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235b8cff'/%3E%3C/svg%3E">
+</head>
+<body>
+  <div class="app" id="app-root">
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <h1>Command Center</h1>
+      </div>
+      <div class="sync-pill" id="sync-pill" title="Статус синхронизации">
+        <span class="sync-dot"></span>
+        <span id="sync-label">Локально</span>
+      </div>
+    </header>
+
+    <nav class="tab-nav" aria-label="Основные разделы">
+      <button class="tab-btn active" data-tab="youtube"><span class="icon">▶</span><span class="label">YouTube</span></button>
+      <button class="tab-btn" data-tab="focus"><span class="icon">◎</span><span class="label">Фокус</span></button>
+      <button class="tab-btn" data-tab="budget"><span class="icon">¥</span><span class="label">Бюджет</span></button>
+      <button class="tab-btn" data-tab="prompts"><span class="icon">⌘</span><span class="label">Промты</span></button>
+      <button class="tab-btn" data-tab="settings"><span class="icon">⚙</span><span class="label">Синхр.</span></button>
+    </nav>
+
+    <!-- 1. YouTube -->
+    <section class="panel active" id="panel-youtube">
+      <h2 class="section-title">Конвейер YouTube</h2>
+      <p class="section-sub">Термометр монетизации, канбан роликов и календарь публикаций</p>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>Термометр монетизации</h3>
+          <span class="chip">1000 / 4000</span>
+        </div>
+        <div id="thermo"></div>
+      </div>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>Канбан роликов</h3>
+          <button class="btn btn-primary btn-sm" id="btn-add-video">+ Ролик</button>
+        </div>
+        <div class="kanban" id="kanban"></div>
+      </div>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>Календарь публикаций</h3>
+        </div>
+        <div class="cal-head">
+          <button class="btn btn-sm" id="cal-prev">‹</button>
+          <strong id="cal-label"></strong>
+          <button class="btn btn-sm" id="cal-next">›</button>
+        </div>
+        <div class="calendar" id="calendar"></div>
+        <div id="cal-events" style="margin-top:12px"></div>
+      </div>
+    </section>
+
+    <!-- 2. Focus -->
+    <section class="panel" id="panel-focus">
+      <h2 class="section-title">Фокус и дисциплина</h2>
+      <p class="section-sub">Привычки, серия дней и быстрые задачи на сегодня</p>
+
+      <div class="block" id="streak-block"></div>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>Привычки</h3>
+        </div>
+        <div class="habit-list" id="habit-list"></div>
+        <div class="btn-row" style="margin-top:10px">
+          <div class="field" style="flex:1;min-width:160px">
+            <input id="new-habit" placeholder="Новая привычка…">
+          </div>
+          <button class="btn btn-primary" id="btn-add-habit">Добавить</button>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>Быстрые задачи на сегодня</h3>
+        </div>
+        <div id="task-list"></div>
+        <div class="inline-fields" style="margin-top:10px">
+          <div class="field">
+            <input id="new-task" placeholder="Задача…">
+          </div>
+          <div class="field">
+            <select id="new-task-prio">
+              <option value="high">Высокий</option>
+              <option value="medium" selected>Средний</option>
+              <option value="low">Низкий</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="btn-add-task" style="margin-top:8px">Добавить задачу</button>
+      </div>
+    </section>
+
+    <!-- 3. Budget -->
+    <section class="panel" id="panel-budget">
+      <h2 class="section-title">Бюджет и подписки</h2>
+      <p class="section-sub">Расходы в ¥ и $, доходы YouTube, ROI и продления</p>
+
+      <div class="block">
+        <div class="block-head"><h3>Сводка ROI</h3></div>
+        <div id="budget-stats"></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="block">
+          <div class="block-head"><h3>Расходы (нейросети / инструменты)</h3></div>
+          <div id="expense-list"></div>
+          <div class="form-grid" style="margin-top:10px">
+            <div class="field"><label>Название</label><input id="exp-name" placeholder="Claude Pro"></div>
+            <div class="inline-fields">
+              <div class="field"><label>Сумма</label><input type="number" id="exp-amount" min="0" step="0.01"></div>
+              <div class="field"><label>Валюта</label>
+                <select id="exp-cur"><option value="CNY">¥ CNY</option><option value="USD">$ USD</option></select>
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" id="btn-add-exp">Добавить расход</button>
+          </div>
+        </div>
+
+        <div class="block">
+          <div class="block-head"><h3>Доходы YouTube</h3></div>
+          <div id="income-list"></div>
+          <div class="form-grid" style="margin-top:10px">
+            <div class="field"><label>Название</label><input id="inc-name" placeholder="YouTube AdSense"></div>
+            <div class="inline-fields">
+              <div class="field"><label>Сумма</label><input type="number" id="inc-amount" min="0" step="0.01"></div>
+              <div class="field"><label>Валюта</label>
+                <select id="inc-cur"><option value="USD">$ USD</option><option value="CNY">¥ CNY</option></select>
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" id="btn-add-inc">Добавить доход</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-head"><h3>Календарь продления подписок</h3></div>
+        <div id="subs-list"></div>
+        <div class="form-grid" style="margin-top:10px">
+          <div class="field"><label>Сервис</label><input id="sub-name" placeholder="IPRoyal Static IP"></div>
+          <div class="inline-fields">
+            <div class="field"><label>Дата продления</label><input type="date" id="sub-date"></div>
+            <div class="field"><label>Цена</label><input type="number" id="sub-price" min="0" step="0.01"></div>
+            <div class="field"><label>Валюта</label>
+              <select id="sub-cur"><option value="USD">$ USD</option><option value="CNY">¥ CNY</option></select>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm" id="btn-add-sub">Добавить подписку</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. Prompts -->
+    <section class="panel" id="panel-prompts">
+      <h2 class="section-title">Банк промтов и чек-листы</h2>
+      <p class="section-sub">Готовые карточки + чек-лист перед публикацией</p>
+
+      <div class="block">
+        <div class="block-head"><h3>Чек-лист перед публикацией</h3></div>
+        <div id="publish-check"></div>
+      </div>
+
+      <div class="block">
+        <div class="block-head"><h3>Библиотека промтов</h3></div>
+        <div id="prompt-list"></div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field"><label>Название</label><input id="prm-title" placeholder="Мой промт"></div>
+          <div class="field"><label>Категория</label><input id="prm-cat" placeholder="jimeng / claude / script"></div>
+          <div class="field"><label>Текст</label><textarea id="prm-text" placeholder="Текст промта…"></textarea></div>
+          <button class="btn btn-primary btn-sm" id="btn-add-prompt">Добавить промт</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. Settings -->
+    <section class="panel" id="panel-settings">
+      <h2 class="section-title">Настройки и синхронизация</h2>
+      <p class="section-sub">GitHub PAT хранится только в localStorage вашего браузера</p>
+
+      <div class="block">
+        <div class="secret-note">
+          Создайте Personal Access Token с правом <strong>contents: write</strong> (classic: repo).
+          Токен не попадает в репозиторий — только в память браузера на этом устройстве.
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>GitHub Token (PAT)</label>
+            <input id="gh-token" type="password" autocomplete="off" placeholder="ghp_…">
+          </div>
+          <div class="inline-fields">
+            <div class="field">
+              <label>Owner</label>
+              <input id="gh-owner" placeholder="your-username">
+            </div>
+            <div class="field">
+              <label>Repo</label>
+              <input id="gh-repo" placeholder="command-center">
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="btn-save-gh">Сохранить в браузере</button>
+            <button class="btn" id="btn-push">Отправить state.json</button>
+            <button class="btn" id="btn-pull">Загрузить из GitHub</button>
+          </div>
+          <p class="status-line" id="settings-updated"></p>
+        </div>
+      </div>
+
+      <div class="block">
+        <h3 style="margin:0 0 8px;font-size:14px">Как это работает 24/7</h3>
+        <p class="muted" style="margin:0;line-height:1.6">
+          Сайт на GitHub Pages. Любое изменение данных с телефона или ПК через API записывает
+          <code>data/state.json</code> в репозиторий. GitHub Actions дважды в день читает этот файл
+          и шлёт пуш в Telegram — даже когда ноутбук выключен. Claude Code на ПК может
+          <code>git pull</code> / править / <code>git push</code> тот же файл.
+        </p>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="modal" role="dialog" aria-modal="true">
+    <div class="modal">
+      <h3 id="modal-title">Ролик</h3>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="js/state.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

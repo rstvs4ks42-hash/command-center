@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "updatedAt": "2026-11-24T00:00:00.000Z",
+  "monetization": {
+    "subscribers": 120,
+    "subscribersGoal": 1000,
+    "watchHours": 480,
+    "watchHoursGoal": 4000
+  },
+  "videos": [
+    {
+      "id": "vid-001",
+      "title": "Как Paper Billions зарабатывает на бумаге",
+      "format": "long",
+      "virality": 72,
+      "stage": "script",
+      "checklist": {
+        "idea": true,
+        "script": false,
+        "images": false,
+        "edit": false,
+        "publish": false
+      },
+      "notes": "Промт 即梦AI: cinematic paper folding, neon money glow, dark studio",
+      "publishDate": "2026-11-28"
+    },
+    {
+      "id": "vid-002",
+      "title": "Short: 3 ошибки новичка на YouTube",
+      "format": "shorts",
+      "virality": 85,
+      "stage": "idea",
+      "checklist": {
+        "idea": true,
+        "script": false,
+        "images": false,
+        "edit": false,
+        "publish": false
+      },
+      "notes": "",
+      "publishDate": "2026-11-26"
+    },
+    {
+      "id": "vid-003",
+      "title": "Remotion: автосборка обложек",
+      "format": "long",
+      "virality": 55,
+      "stage": "images",
+      "checklist": {
+        "idea": true,
+        "script": true,
+        "images": false,
+        "edit": false,
+        "publish": false
+      },
+      "notes": "Стиль Brainstorm / Paper Billions",
+      "publishDate": "2026-12-02"
+    }
+  ],
+  "habits": [
+    {
+      "id": "hab-001",
+      "name": "1 час работы над YouTube",
+      "archived": false
+    },
+    {
+      "id": "hab-002",
+      "name": "Английский / Учёба",
+      "archived": false
+    },
+    {
+      "id": "hab-003",
+      "name": "Спорт / Активность",
+      "archived": false
+    },
+    {
+      "id": "hab-004",
+      "name": "Сон до 01:00",
+      "archived": false
+    }
+  ],
+  "habitLogs": {},
+  "streak": {
+    "current": 0,
+    "best": 0,
+    "lastCompleteDate": null
+  },
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Дописать сценарий ролика #1",
+      "priority": "high",
+      "done": false,
+      "date": "2026-11-24"
+    },
+    {
+      "id": "task-002",
+      "title": "Сгенерировать 5 кадров в 即梦AI",
+      "priority": "medium",
+      "done": false,
+      "date": "2026-11-24"
+    },
+    {
+      "id": "task-003",
+      "title": "Продлить Static IP IPRoyal",
+      "priority": "high",
+      "done": false,
+      "date": "2026-11-24"
+    }
+  ],
+  "budget": {
+    "exchangeRate": 7.2,
+    "expenses": [
+      {
+        "id": "exp-001",
+        "name": "即梦AI Pro",
+        "amount": 99,
+        "currency": "CNY",
+        "category": "ai",
+        "date": "2026-11-01"
+      },
+      {
+        "id": "exp-002",
+        "name": "Claude Pro",
+        "amount": 20,
+        "currency": "USD",
+        "category": "ai",
+        "date": "2026-11-01"
+      },
+      {
+        "id": "exp-003",
+        "name": "IPRoyal Static IP США",
+        "amount": 15,
+        "currency": "USD",
+        "category": "proxy",
+        "date": "2026-11-10"
+      }
+    ],
+    "income": [
+      {
+        "id": "inc-001",
+        "name": "YouTube (оценка)",
+        "amount": 0,
+        "currency": "USD",
+        "date": "2026-11-01"
+      }
+    ]
+  },
+  "subscriptions": [
+    {
+      "id": "sub-001",
+      "name": "Static IP США (IPRoyal)",
+      "renewDate": "2026-11-26",
+      "price": 15,
+      "currency": "USD",
+      "critical": true
+    },
+    {
+      "id": "sub-002",
+      "name": "Claude Pro",
+      "renewDate": "2026-12-05",
+      "price": 20,
+      "currency": "USD",
+      "critical": false
+    },
+    {
+      "id": "sub-003",
+      "name": "即梦AI",
+      "renewDate": "2026-12-01",
+      "price": 99,
+      "currency": "CNY",
+      "critical": false
+    }
+  ],
+  "prompts": [
+    {
+      "id": "prm-001",
+      "title": "Поиск ниши YouTube",
+      "category": "research",
+      "text": "Проанализируй 10 каналов в нише [НИША]. Для каждого укажи: средний CTR обложек, удержание 0–30 сек, частота Shorts vs Long, темы с наибольшим ростом за 90 дней. Предложи 5 идей роликов с прогнозом виральности %."
+    },
+    {
+      "id": "prm-002",
+      "title": "Стилистика Paper Billions / 即梦AI",
+      "category": "jimeng",
+      "text": "Cinematic dark studio, paper money origami transforming into glowing neon figures, ultra detailed, volumetric lighting, shallow depth of field, Paper Billions aesthetic, 8k, dramatic contrast --ar 16:9"
+    },
+    {
+      "id": "prm-003",
+      "title": "Brainstorm кадры 即梦AI",
+      "category": "jimeng",
+      "text": "Storyboard frame [N]/ dark moody atmosphere, surreal finance metaphor, paper texture + liquid metal, soft rim light, centered composition, no text, no watermark, photoreal cinematic"
+    },
+    {
+      "id": "prm-004",
+      "title": "Claude Code: обновить state.json",
+      "category": "claude",
+      "text": "Прочитай data/state.json. Обнови [ПОЛЕ] согласно [ИЗМЕНЕНИЕ]. Сохрани валидный JSON, сделай git commit с сообщением на русском и git push."
+    },
+    {
+      "id": "prm-005",
+      "title": "Хук 0–12 сек",
+      "category": "script",
+      "text": "Напиши 3 варианта хука (0–12 сек) для ролика «[НАЗВАНИЕ]». Формат: шокирующий факт → вопрос → обещание результата. Без воды, разговорный русский."
+    }
+  ],
+  "publishChecklist": {
+    "hook": false,
+    "thumbnail": false,
+    "subtitles": false,
+    "hashtags": false,
+    "endScreen": false,
+    "description": false
+  }
+}
