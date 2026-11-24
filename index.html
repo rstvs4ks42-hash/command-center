@@ -71,6 +71,7 @@
       <button class="tab-btn" data-tab="focus"><span class="icon">◎</span><span class="label">Фокус</span></button>
       <button class="tab-btn" data-tab="budget"><span class="icon">¥</span><span class="label">Бюджет</span></button>
       <button class="tab-btn" data-tab="prompts"><span class="icon">⌘</span><span class="label">Промты</span></button>
+      <button class="tab-btn" data-tab="shield"><span class="icon">🛡</span><span class="label">IP-Щит</span></button>
       <button class="tab-btn" data-tab="settings"><span class="icon">⚙</span><span class="label">Синхр.</span></button>
     </nav>
 
@@ -262,7 +263,26 @@
       </div>
     </section>
 
-    <!-- 5. Settings -->
+    <!-- 5. IP Shield -->
+    <section class="panel" id="panel-shield">
+      <h2 class="section-title">🛡 IP-Щит</h2>
+      <p class="section-sub">7-уровневый сканер чистоты соединения перед Claude и YouTube</p>
+
+      <div class="block">
+        <div class="block-head">
+          <h3>Глубокий аудит</h3>
+          <span class="muted" id="shield-status">Ожидание…</span>
+        </div>
+        <button type="button" class="btn btn-primary btn-add-event" id="btn-shield-run">🔍 Запустить глубокий аудит</button>
+        <p class="muted" style="margin-top:8px">Параллельно: кворум IP ×4, гео Claude, ASN, WebRTC, TZ, locale, RTT</p>
+      </div>
+
+      <div id="shield-root">
+        <div class="empty">Откройте вкладку или нажмите кнопку аудита</div>
+      </div>
+    </section>
+
+    <!-- 6. Settings -->
     <section class="panel" id="panel-settings">
       <h2 class="section-title">Настройки и синхронизация</h2>
       <p class="section-sub">GitHub PAT хранится только в localStorage вашего браузера</p>
@@ -338,5 +358,6 @@
   <script src="js/crypto.js"></script>
   <script src="js/state.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/ip-shield.js"></script>
 </body>
 </html>
