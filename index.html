@@ -303,6 +303,23 @@
         <p class="muted" style="margin-top:8px">Кворум IP ×4 · гео Claude · ASN/ISP · WebRTC · TZ · пинг</p>
       </div>
 
+      <div class="block aegis-block">
+        <div class="block-head">
+          <h3>💻 Дистанционное управление ПК (Claude Aegis)</h3>
+        </div>
+        <div class="field">
+          <label for="aegis-cmd-topic">Секретный канал команд (aegisCmdTopic)</label>
+          <input id="aegis-cmd-topic" type="text" autocomplete="off" spellcheck="false" placeholder="nikolai_aegis_cmd_7712">
+        </div>
+        <div class="aegis-grid">
+          <button type="button" class="btn btn-aegis" data-aegis-cmd="STATUS">📊 Статус ПК</button>
+          <button type="button" class="btn btn-aegis" data-aegis-cmd="AUDIT">🔍 Аудит утечек</button>
+          <button type="button" class="btn btn-aegis" data-aegis-cmd="START">🛡 Запустить Claude</button>
+          <button type="button" class="btn btn-aegis btn-aegis-stop" data-aegis-cmd="LOCK">⛔ ЭКСТРЕННЫЙ СТОП</button>
+        </div>
+        <p class="status-line aegis-status" id="aegis-status" aria-live="polite"></p>
+      </div>
+
       <div id="shield-root">
         <div class="empty">Откройте вкладку или нажмите кнопку аудита</div>
       </div>

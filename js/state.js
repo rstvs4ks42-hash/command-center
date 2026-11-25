@@ -6,9 +6,11 @@
 const STATE_PATH = "data/state.json";
 const LS_GITHUB = "cc_github_creds";
 const LS_NTFY = "cc_ntfy_topic";
+const LS_AEGIS_CMD = "cc_aegis_cmd_topic";
 const LS_VAULT = "cc_vault_cache";
 const SS_PASSWORD = "cc_app_password";
 const NTFY_CLICK = "https://rstvs4ks42-hash.github.io/command-center/";
+const DEFAULT_AEGIS_CMD_TOPIC = "nikolai_aegis_cmd_7712";
 
 const STAGES = [
   { id: "idea", label: "💡 Идея" },
@@ -67,6 +69,7 @@ const DEFAULT_STATE = {
   calendarEvents: [],
   sentReminderIds: [],
   ntfyTopic: "",
+  aegisCmdTopic: DEFAULT_AEGIS_CMD_TOPIC,
   launchFund: {
     title: "Копилка на запуск ИИ-конвейера",
     savedCny: 0,
@@ -201,6 +204,56 @@ function setNtfyTopic(topic) {
     /* ignore */
   }
   if (state) state.ntfyTopic = t;
+}
+
+function getAegisCmdTopic() {
+  try {
+    const fromLs = (localStorage.getItem(LS_AEGIS_CMD) || "").trim();
+    if (fromLs) return fromLs;
+  } catch {
+    /* ignore */
+  }
+  if (state && state.aegisCmdTopic) return String(state.aegisCmdTopic).trim();
+  return DEFAULT_AEGIS_CMD_TOPIC;
+}
+
+function setAegisCmdTopic(topic) {
+  const t = (topic || "").trim() || DEFAULT_AEGIS_CMD_TOPIC;
+  try {
+    localStorage.setItem(LS_AEGIS_CMD, t);
+  } catch {
+    /* ignore */
+  }
+  if (state) state.aegisCmdTopic = t;
+}
+
+/** Команда Claude Aegis на ПК через секретный ntfy-канал. */
+async function sendAegisCommand(cmd) {
+  const topic = getAegisCmdTopic();
+  if (!topic) return { ok: false, reason: "no-topic" };
+  const body = String(cmd || "").trim().toUpperCase();
+  if (!body) return { ok: false, reason: "no-cmd" };
+  try {
+    const res = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+      method: "POST",
+      headers: {
+        Title: "Claude Aegis",
+        Priority: body === "LOCK" ? "urgent" : "high",
+        Tags: body === "LOCK" ? "rotating_light" : "desktop_computer",
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+      body,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      console.error("aegis cmd failed", res.status, text);
+      return { ok: false, reason: `http-${res.status}` };
+    }
+    return { ok: true, reason: "sent", cmd: body };
+  } catch (e) {
+    console.error(e);
+    return { ok: false, reason: e.message || "network" };
+  }
 }
 
 /** ISO datetime in Asia/Shanghai (+08:00) for date YYYY-MM-DD + HH:MM */
@@ -514,6 +567,22 @@ function ensureDefaults() {
       if (lsTopic !== state.ntfyTopic) localStorage.setItem(LS_NTFY, state.ntfyTopic);
     } else if (lsTopic) {
       state.ntfyTopic = lsTopic;
+    }
+  } catch {
+    /* ignore */
+  }
+  // aegisCmdTopic: секретный канал команд Claude Aegis
+  if (state.aegisCmdTopic == null || String(state.aegisCmdTopic).trim() === "") {
+    state.aegisCmdTopic = DEFAULT_AEGIS_CMD_TOPIC;
+  } else {
+    state.aegisCmdTopic = String(state.aegisCmdTopic).trim();
+  }
+  try {
+    const lsAegis = (localStorage.getItem(LS_AEGIS_CMD) || "").trim();
+    if (state.aegisCmdTopic) {
+      if (lsAegis !== state.aegisCmdTopic) localStorage.setItem(LS_AEGIS_CMD, state.aegisCmdTopic);
+    } else if (lsAegis) {
+      state.aegisCmdTopic = lsAegis;
     }
   } catch {
     /* ignore */
@@ -905,6 +974,9 @@ window.CC = {
   setGithubCreds,
   getNtfyTopic,
   setNtfyTopic,
+  getAegisCmdTopic,
+  setAegisCmdTopic,
+  sendAegisCommand,
   pushToGithub,
   pullFromGithub,
   onSyncStatus,

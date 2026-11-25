@@ -753,9 +753,50 @@ a {
 }
 .shield-fixes li { margin-bottom: 6px; }
 
+/* Claude Aegis remote control */
+.aegis-block .field { margin-bottom: 12px; }
+.aegis-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.btn-aegis {
+  min-height: 56px;
+  padding: 14px 12px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  white-space: normal;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+.btn-aegis:hover { background: var(--bg-hover); }
+.btn-aegis:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.btn-aegis-stop {
+  background: rgba(255, 107, 107, 0.16);
+  border-color: rgba(255, 107, 107, 0.55);
+  color: #ff8f8f;
+}
+.btn-aegis-stop:hover {
+  background: rgba(255, 107, 107, 0.28);
+  filter: none;
+}
+.aegis-status {
+  margin-top: 10px;
+  min-height: 1.2em;
+  font-size: 13px;
+  color: var(--accent-2);
+}
+
 @media (max-width: 420px) {
   .tab-btn span.label { font-size: 9px; }
   .tab-btn span.icon { font-size: 14px; }
+  .aegis-grid { grid-template-columns: 1fr; }
+  .btn-aegis { min-height: 52px; font-size: 14px; }
 }
 
 /* Focus week schedule + widgets */

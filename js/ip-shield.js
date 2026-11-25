@@ -1,7 +1,6 @@
 /**
- * IP-Щит — 6-уровневый сканер чистоты соединения.
+ * IP-Щит — 6-уровневый сканер чистоты соединения + Claude Aegis remote.
  * Без ложных тревог на Static Residential / ISP (Soanalytics и др.).
- * Автономный модуль: не меняет state.js / notify.py / логику других вкладок.
  */
 (() => {
   const BLOCKED = new Set(["CN", "HK", "MO", "RU", "BY", "IR", "KP"]);
@@ -586,9 +585,78 @@
     }
   }
 
+  function setAegisStatus(text) {
+    const el = document.getElementById("aegis-status");
+    if (el) el.textContent = text || "";
+  }
+
+  function saveAegisTopicFromInput() {
+    const input = document.getElementById("aegis-cmd-topic");
+    if (!input || !window.CC) return;
+    window.CC.setAegisCmdTopic(input.value.trim());
+    input.value = window.CC.getAegisCmdTopic();
+    try {
+      window.CC.persistLocal();
+    } catch (_) {
+      /* vault may be locked — localStorage уже обновлён */
+    }
+  }
+
+  async function sendAegis(cmd, btn) {
+    if (!window.CC || typeof window.CC.sendAegisCommand !== "function") {
+      setAegisStatus("Ошибка: state.js не загружен");
+      return;
+    }
+    saveAegisTopicFromInput();
+    const buttons = document.querySelectorAll("[data-aegis-cmd]");
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+    if (btn) btn.classList.add("is-sending");
+    setAegisStatus("Отправка…");
+    try {
+      const r = await window.CC.sendAegisCommand(cmd);
+      if (r.ok) {
+        setAegisStatus("Команда отправлена на ПК — ждите отчёт в ntfy");
+      } else if (r.reason === "no-topic") {
+        setAegisStatus("Укажите секретный канал команд");
+      } else {
+        setAegisStatus(`Ошибка отправки: ${r.reason || "сеть"}`);
+      }
+    } catch (e) {
+      setAegisStatus(`Ошибка: ${e.message || e}`);
+    } finally {
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
+      if (btn) btn.classList.remove("is-sending");
+    }
+  }
+
+  function fillAegisTopic() {
+    const input = document.getElementById("aegis-cmd-topic");
+    if (input && window.CC) input.value = window.CC.getAegisCmdTopic();
+  }
+
+  function bootAegis() {
+    const input = document.getElementById("aegis-cmd-topic");
+    fillAegisTopic();
+    if (input) {
+      input.addEventListener("change", saveAegisTopicFromInput);
+      input.addEventListener("blur", saveAegisTopicFromInput);
+    }
+    document.querySelectorAll("[data-aegis-cmd]").forEach((btn) => {
+      btn.addEventListener("click", () => sendAegis(btn.getAttribute("data-aegis-cmd"), btn));
+    });
+    if (window.CC && typeof window.CC.onAuth === "function") {
+      window.CC.onAuth(() => fillAegisTopic());
+    }
+  }
+
   function boot() {
     const btn = document.getElementById("btn-shield-run");
     if (btn) btn.addEventListener("click", () => runAudit());
+    bootAegis();
   }
 
   if (document.readyState === "loading") {
